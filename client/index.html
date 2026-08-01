@@ -13,8 +13,8 @@
     <script src="app.js" defer></script>
 </head>
 
-<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans antialiased">
-
+<body class="min-h-screen flex flex-col font-sans antialiased text-slate-100 bg-cover bg-center bg-no-repeat bg-fixed"
+      style="background-image:url('./assets/background.jpg');">
     <!-- Header -->
     <header class="border-b border-slate-800 bg-slate-950/60 backdrop-blur sticky top-0 z-50">
         <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -69,7 +69,7 @@
                                 class="bg-slate-900 text-xs text-slate-300 px-3 py-2 rounded-lg border border-slate-700 focus:outline-none w-64 select-all font-mono"
                                 value="Generating..." />
                             <button id="btn-copy-link"
-                                class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-indigo-600/20 active:scale-95">
+                                class="bg-indigo-600 min-w-[90px] hover:bg-indigo-500 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-1 shadow-md shadow-indigo-600/20 active:scale-95">
                                 Copy Link
                             </button>
                         </div>
@@ -79,16 +79,19 @@
         </section>
 
         <!-- Peers & Connection Status -->
-        <section class="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-6 shadow-xl">
-            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Connected Peers in Room</h2>
-            <div id="peers-list" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <!-- Waiting placeholder -->
-                <div id="peer-placeholder"
-                    class="col-span-full py-8 text-center text-slate-500 border border-dashed border-slate-700 rounded-xl">
-                    Waiting for second peer to join room...
-                </div>
-            </div>
-        </section>
+<section class="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-6 shadow-xl backdrop-blur-sm">
+  <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4 text-center">
+    Transfer Room Participants
+  </h2>
+  
+  <!-- Forced 2-column layout across all screen sizes (grid-cols-2) -->
+  <div id="peers-list" class="grid grid-cols-2 gap-3 sm:gap-6">
+    <!-- Waiting placeholder -->
+    <div id="peer-placeholder" class="col-span-2 py-8 text-center text-slate-500 border border-dashed border-slate-700/80 rounded-xl">
+      Waiting for second peer to join room...
+    </div>
+  </div>
+</section>
 
     </main>
 
