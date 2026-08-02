@@ -13,26 +13,39 @@ document.addEventListener('DOMContentLoaded', () => {
     incomingFileInfo: null,
     receivedChunks: [],
     receivedSize: 0,
-    CHUNK_SIZE: 16 * 1024, // 16KB per chunk
+    CHUNK_SIZE: 16 * 1024,
 
-    // Disk Stream handles
+    // Stream handles
     fileHandle: null,
     writableStream: null,
 
-    // Outgoing & Transfer metrics state
+    // Transfer & Speed Metrics
     fileQueue: [],
     isTransferring: false,
     transferStartTime: 0,
+    lastMetricTime: 0,
+    lastMetricBytes: 0,
     transferCancelled: false,
 
     // Handshake resolver
     receiverReadyResolver: null
   };
 
+  // STUN + TURN Fallback Configuration for Firewalls/NAT
   const ICE_SERVERS = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
+      { urls: 'stun:stun1.l.google.com:19302' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ]
   };
 
@@ -72,6 +85,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  }
+
+  function formatETA(seconds) {
+    if (!isFinite(seconds) || seconds <= 0) return 'ETA: --';
+    if (seconds < 60) return `ETA: ${Math.ceil(seconds)}s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.ceil(seconds % 60);
+    return `ETA: ${mins}m ${secs}s`;
   }
 
   function showToast(message, type = 'info') {
@@ -118,7 +139,10 @@ document.addEventListener('DOMContentLoaded', () => {
     transferFilename: document.getElementById('transfer-filename'),
     transferPercentage: document.getElementById('transfer-percentage'),
     progressBar: document.getElementById('progress-bar'),
-    transferStatus: document.getElementById('transfer-status')
+    transferStatus: document.getElementById('transfer-status'),
+    transferSpeed: document.getElementById('transfer-speed'),
+    transferEta: document.getElementById('transfer-eta'),
+    btnCancelTransfer: document.getElementById('btn-cancel-transfer')
   };
 
   // 3. Room & QR Initialization
@@ -166,7 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
     pc.onconnectionstatechange = () => {
       console.log('P2P State:', pc.connectionState);
       if (pc.connectionState === 'connected') {
-        updateBadge('P2P Direct Connection Established', 'bg-emerald-500', 'text-emerald-400');
+        updateBadge('P2P Connection Established (Encrypted)', 'bg-emerald-500', 'text-emerald-400');
         elements.transferSection.classList.remove('hidden');
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         updateBadge('P2P Connection Lost', 'bg-rose-500', 'text-rose-400');
@@ -244,12 +268,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     state.transferCancelled = false;
     state.transferStartTime = Date.now();
+    state.lastMetricTime = Date.now();
+    state.lastMetricBytes = 0;
 
     elements.progressContainer.classList.remove('hidden');
     elements.transferFilename.textContent = file.name;
     elements.transferStatus.textContent = 'Waiting for receiver...';
 
-    // 1. Send Metadata Header
+    // Metadata Header
     const metadata = {
       type: 'metadata',
       name: file.name,
@@ -258,14 +284,11 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     state.dataChannel.send(JSON.stringify(metadata));
 
-    // 2. Wait for receiver ready signal
+    // Wait for Handshake Ready Ack
     await new Promise((resolve) => {
       state.receiverReadyResolver = resolve;
-
-      // Timeout safety net (5 seconds)
       setTimeout(() => {
         if (state.receiverReadyResolver) {
-          console.warn('Ack timeout reached, sending anyway...');
           state.receiverReadyResolver = null;
           resolve();
         }
@@ -274,7 +297,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     elements.transferStatus.textContent = 'Sending...';
 
-    // 3. Read & Stream Chunks
     const arrayBuffer = await file.arrayBuffer();
     let offset = 0;
     state.dataChannel.bufferedAmountLowThreshold = 65536;
@@ -307,7 +329,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         elements.transferStatus.textContent = 'Completed!';
         showToast(`Sent ${file.name} successfully`, 'success');
-        setTimeout(() => resetTransferUI(), 2500);
+        setTimeout(() => resetTransferUI(), 3000);
         resolve();
       };
 
@@ -315,11 +337,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 6. File Receiver & Message Dispatcher
+  // 6. File Receiver & Data Dispatcher
   async function handleIncomingData(event) {
     const data = event.data;
 
-    // A. Control String Messages
+    // Control Messages
     if (typeof data === 'string') {
       try {
         const parsed = JSON.parse(data);
@@ -337,6 +359,8 @@ document.addEventListener('DOMContentLoaded', () => {
           state.receivedChunks = [];
           state.receivedSize = 0;
           state.transferStartTime = Date.now();
+          state.lastMetricTime = Date.now();
+          state.lastMetricBytes = 0;
           state.transferCancelled = false;
           state.fileHandle = null;
           state.writableStream = null;
@@ -352,18 +376,13 @@ document.addEventListener('DOMContentLoaded', () => {
               });
               state.writableStream = await state.fileHandle.createWritable();
               elements.transferStatus.textContent = 'Streaming to disk...';
-              showToast('Direct disk stream initiated', 'info');
             } catch (err) {
-              console.warn('File picker bypassed or failed:', err);
               elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
-              showToast('Saving to browser memory (fallback mode)', 'info');
             }
           } else {
             elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
-            showToast('Using Blob fallback mode', 'info');
           }
 
-          // Emit Ack back to Sender
           if (state.dataChannel && state.dataChannel.readyState === 'open') {
             state.dataChannel.send(JSON.stringify({ type: 'receiver-ready' }));
           }
@@ -381,16 +400,16 @@ document.addEventListener('DOMContentLoaded', () => {
           state.writableStream = null;
           state.fileHandle = null;
           resetTransferUI('Peer cancelled transfer');
-          showToast('Sender cancelled the transfer', 'error');
+          showToast('Sender cancelled transfer', 'error');
           return;
         }
       } catch (err) {
-        console.error('Error parsing signaling text data:', err);
+        console.error('DataChannel JSON Error:', err);
       }
       return;
     }
 
-    // B. Binary Chunks
+    // Binary Chunks
     if ((data instanceof ArrayBuffer || ArrayBuffer.isView(data)) && state.incomingFileInfo) {
       if (state.transferCancelled) return;
 
@@ -405,12 +424,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       updateTransferMetrics(state.receivedSize, state.incomingFileInfo.size);
 
-      // Transfer Finished
+      // Finished!
       if (state.receivedSize >= state.incomingFileInfo.size) {
         if (state.writableStream) {
           await state.writableStream.close();
-          elements.transferStatus.textContent = 'Saved directly to disk!';
-          showToast(`File saved to disk: ${state.incomingFileInfo.name}`, 'success');
+          elements.transferStatus.textContent = 'Saved to disk!';
+          showToast(`Saved to disk: ${state.incomingFileInfo.name}`, 'success');
         } else {
           const blob = new Blob(state.receivedChunks, { 
             type: state.incomingFileInfo.mimeType || 'application/octet-stream' 
@@ -431,17 +450,40 @@ document.addEventListener('DOMContentLoaded', () => {
         state.writableStream = null;
         state.fileHandle = null;
 
-        setTimeout(() => resetTransferUI(), 2500);
+        setTimeout(() => resetTransferUI(), 3000);
       }
     }
   }
 
-  // Progress Bar & UI Updater
+  // 7. Speed & ETA Metrics Calculation
   function updateTransferMetrics(currentBytes, totalBytes) {
     if (!totalBytes || totalBytes === 0) return;
+
     const percent = Math.min(100, Math.round((currentBytes / totalBytes) * 100));
     elements.progressBar.style.width = `${percent}%`;
     elements.transferPercentage.textContent = `${percent}%`;
+
+    const now = Date.now();
+    const timeDelta = (now - state.lastMetricTime) / 1000;
+
+    // Update speed/ETA every 300ms window
+    if (timeDelta >= 0.3) {
+      const bytesDelta = currentBytes - state.lastMetricBytes;
+      const bytesPerSec = bytesDelta / timeDelta;
+
+      if (elements.transferSpeed) {
+        elements.transferSpeed.textContent = `${formatBytes(bytesPerSec)}/s`;
+      }
+
+      const remainingBytes = totalBytes - currentBytes;
+      const etaSeconds = bytesPerSec > 0 ? remainingBytes / bytesPerSec : 0;
+      if (elements.transferEta) {
+        elements.transferEta.textContent = formatETA(etaSeconds);
+      }
+
+      state.lastMetricTime = now;
+      state.lastMetricBytes = currentBytes;
+    }
   }
 
   function resetTransferUI(statusText = '') {
@@ -450,14 +492,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     elements.progressBar.style.width = '0%';
     elements.transferPercentage.textContent = '0%';
+    if (elements.transferSpeed) elements.transferSpeed.textContent = '0 KB/s';
+    if (elements.transferEta) elements.transferEta.textContent = 'ETA: --';
+
     setTimeout(() => {
-      if (!state.incomingFileInfo) {
+      if (!state.incomingFileInfo && !state.isTransferring) {
         elements.progressContainer.classList.add('hidden');
       }
-    }, 2000);
+    }, 2500);
   }
 
-  // 7. Socket & UI Handlers
+  // Cancel Handler
+  if (elements.btnCancelTransfer) {
+    elements.btnCancelTransfer.addEventListener('click', () => {
+      state.transferCancelled = true;
+      if (state.dataChannel && state.dataChannel.readyState === 'open') {
+        state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
+      }
+      resetTransferUI('Cancelled');
+      showToast('Transfer cancelled', 'info');
+    });
+  }
+
+  // 8. Socket & UI Handlers
   function initSocket() {
     state.socket = io(window.location.origin);
 

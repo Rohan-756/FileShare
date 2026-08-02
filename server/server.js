@@ -2,20 +2,29 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
+
+const PORT = process.env.PORT || 3000;
+const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || '*';
+
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: {
+    origin: ALLOWED_ORIGIN,
+    methods: ['GET', 'POST']
+  }
 });
 
+// Serve client static files
 app.use(express.static(path.join(__dirname, '../client')));
 
+// Socket.io Room Logic
 io.on('connection', (socket) => {
-  let currentRoom = null;
+  console.log(`User connected: ${socket.id}`);
 
   socket.on('create-or-join-room', (roomId) => {
-    currentRoom = roomId;
     const room = io.sockets.adapter.rooms.get(roomId);
     const numClients = room ? room.size : 0;
 
@@ -25,18 +34,13 @@ io.on('connection', (socket) => {
     } else if (numClients === 1) {
       socket.join(roomId);
       const peers = Array.from(io.sockets.adapter.rooms.get(roomId));
-      
-      // Notify both peers of updated room list
       io.to(roomId).emit('room-peers', { isInitiator: false, peers });
-      
-      // Prompt the initiator to start the WebRTC offer
-      socket.to(roomId).emit('ready-to-connect');
+      io.to(roomId).emit('ready-to-connect');
     } else {
       socket.emit('room-full', { roomId });
     }
   });
 
-  // Relay WebRTC Signaling Messages (Offer, Answer, ICE Candidates)
   socket.on('signal', ({ targetId, signalData }) => {
     io.to(targetId).emit('signal', {
       senderId: socket.id,
@@ -44,14 +48,19 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('disconnect', () => {
-    if (currentRoom) {
-      socket.to(currentRoom).emit('peer-disconnected', { peerId: socket.id });
+  socket.on('disconnecting', () => {
+    for (const roomId of socket.rooms) {
+      if (roomId !== socket.id) {
+        socket.to(roomId).emit('peer-disconnected', { peerId: socket.id });
+      }
     }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.id}`);
   });
 });
 
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+  console.log(`FileShare Server running on http://localhost:${PORT}`);
 });
