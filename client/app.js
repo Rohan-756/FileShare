@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // 1. App State & Utilities
+  // 1. App State
   const state = {
     socket: null,
     roomId: null,
@@ -7,7 +7,13 @@ document.addEventListener('DOMContentLoaded', () => {
     peers: [],
     qrCodeInstance: null,
     peerConnection: null,
-    dataChannel: null
+    dataChannel: null,
+
+    // File transfer state
+    incomingFileInfo: null,
+    receivedChunks: [],
+    receivedSize: 0,
+    CHUNK_SIZE: 16 * 1024 // 16KB per chunk
   };
 
   const ICE_SERVERS = {
@@ -53,7 +59,15 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCopyLink: document.getElementById('btn-copy-link'),
     qrContainer: document.getElementById('qrcode'),
     peersList: document.getElementById('peers-list'),
-    peerPlaceholder: document.getElementById('peer-placeholder')
+    peerPlaceholder: document.getElementById('peer-placeholder'),
+    transferSection: document.getElementById('transfer-section'),
+    dropzone: document.getElementById('dropzone'),
+    fileInput: document.getElementById('file-input'),
+    progressContainer: document.getElementById('progress-container'),
+    transferFilename: document.getElementById('transfer-filename'),
+    transferPercentage: document.getElementById('transfer-percentage'),
+    progressBar: document.getElementById('progress-bar'),
+    transferStatus: document.getElementById('transfer-status')
   };
 
   // 3. Room & QR Initialization
@@ -66,7 +80,6 @@ document.addEventListener('DOMContentLoaded', () => {
     state.roomId = roomId;
 
     elements.roomCodeDisplay.textContent = state.roomId;
-
     const fullShareUrl = `${window.location.origin}${window.location.pathname}#room=${state.roomId}`;
     elements.shareUrlInput.value = fullShareUrl;
 
@@ -90,7 +103,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     state.peerConnection = pc;
 
-    // Send local ICE candidates to the remote peer via signaling server
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         state.socket.emit('signal', {
@@ -100,17 +112,17 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
 
-    // Connection state changes
     pc.onconnectionstatechange = () => {
-      console.log('P2P Connection State:', pc.connectionState);
+      console.log('P2P State:', pc.connectionState);
       if (pc.connectionState === 'connected') {
         updateBadge('P2P Direct Connection Established', 'bg-emerald-500', 'text-emerald-400');
+        elements.transferSection.classList.remove('hidden');
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         updateBadge('P2P Connection Lost', 'bg-rose-500', 'text-rose-400');
+        elements.transferSection.classList.add('hidden');
       }
     };
 
-    // Receiver setup for DataChannel
     pc.ondatachannel = (event) => {
       state.dataChannel = event.channel;
       setupDataChannelEvents();
@@ -121,28 +133,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function setupDataChannelEvents() {
     if (!state.dataChannel) return;
+    state.dataChannel.binaryType = 'arraybuffer';
 
     state.dataChannel.onopen = () => {
-      console.log('WebRTC DataChannel is OPEN');
+      console.log('DataChannel OPEN');
+      elements.transferSection.classList.remove('hidden');
     };
 
     state.dataChannel.onclose = () => {
-      console.log('WebRTC DataChannel is CLOSED');
+      console.log('DataChannel CLOSED');
+      elements.transferSection.classList.add('hidden');
     };
 
-    state.dataChannel.onmessage = (event) => {
-      console.log('Received message via DataChannel:', event.data);
-    };
+    state.dataChannel.onmessage = handleIncomingData;
   }
 
   async function startWebRTCOffer(targetPeerId) {
     const pc = createPeerConnection(targetPeerId);
-
-    // Create DataChannel (Initiator)
     state.dataChannel = pc.createDataChannel('file-transfer', { ordered: true });
     setupDataChannelEvents();
 
-    // Create Offer
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
@@ -156,7 +166,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (signalData.type === 'offer') {
       const pc = createPeerConnection(senderId);
       await pc.setRemoteDescription(new RTCSessionDescription(signalData.offer));
-
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
@@ -175,7 +184,111 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 5. Socket.io Connection & Signal Handlers
+  // 5. File Transfer Engine (Chunking & Receiving)
+  async function sendFile(file) {
+    if (!state.dataChannel || state.dataChannel.readyState !== 'open') {
+      alert('Peer connection not open yet!');
+      return;
+    }
+
+    elements.progressContainer.classList.remove('hidden');
+    elements.transferFilename.textContent = file.name;
+    elements.transferStatus.textContent = 'Sending file...';
+
+    // 1. Send metadata JSON first
+    const metadata = {
+      type: 'metadata',
+      name: file.name,
+      size: file.size,
+      mimeType: file.type
+    };
+    state.dataChannel.send(JSON.stringify(metadata));
+
+    // 2. Read and stream chunks
+    const arrayBuffer = await file.arrayBuffer();
+    let offset = 0;
+
+    state.dataChannel.bufferedAmountLowThreshold = 65536; // 64KB backpressure threshold
+
+    const sendChunks = () => {
+      while (offset < file.size) {
+        // Prevent DataChannel buffer overflow
+        if (state.dataChannel.bufferedAmount > state.dataChannel.bufferedAmountLowThreshold) {
+          state.dataChannel.onbufferedamountlow = () => {
+            state.dataChannel.onbufferedamountlow = null;
+            sendChunks();
+          };
+          return;
+        }
+
+        const chunk = arrayBuffer.slice(offset, offset + state.CHUNK_SIZE);
+        state.dataChannel.send(chunk);
+        offset += chunk.byteLength;
+
+        // Update progress UI
+        const percent = Math.round((offset / file.size) * 100);
+        elements.progressBar.style.width = `${percent}%`;
+        elements.transferPercentage.textContent = `${percent}%`;
+      }
+
+      elements.transferStatus.textContent = 'Transfer completed!';
+      setTimeout(() => elements.progressContainer.classList.add('hidden'), 3000);
+    };
+
+    sendChunks();
+  }
+
+  function handleIncomingData(event) {
+    const data = event.data;
+
+    // Handle Metadata String Header
+    if (typeof data === 'string') {
+      const parsed = JSON.parse(data);
+      if (parsed.type === 'metadata') {
+        state.incomingFileInfo = parsed;
+        state.receivedChunks = [];
+        state.receivedSize = 0;
+
+        elements.progressContainer.classList.remove('hidden');
+        elements.transferFilename.textContent = parsed.name;
+        elements.transferStatus.textContent = 'Receiving file...';
+        elements.progressBar.style.width = '0%';
+        elements.transferPercentage.textContent = '0%';
+      }
+      return;
+    }
+
+    // Handle Binary ArrayBuffer Chunks
+    if (data instanceof ArrayBuffer && state.incomingFileInfo) {
+      state.receivedChunks.push(data);
+      state.receivedSize += data.byteLength;
+
+      const percent = Math.round((state.receivedSize / state.incomingFileInfo.size) * 100);
+      elements.progressBar.style.width = `${percent}%`;
+      elements.transferPercentage.textContent = `${percent}%`;
+
+      // Transfer Finished!
+      if (state.receivedSize >= state.incomingFileInfo.size) {
+        const blob = new Blob(state.receivedChunks, { type: state.incomingFileInfo.mimeType || 'application/octet-stream' });
+        
+        // Trigger Automatic Browser Download
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = state.incomingFileInfo.name;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        elements.transferStatus.textContent = 'File downloaded successfully!';
+        state.incomingFileInfo = null;
+        state.receivedChunks = [];
+
+        setTimeout(() => elements.progressContainer.classList.add('hidden'), 4000);
+      }
+    }
+  }
+
+  // 6. Socket & UI Handlers
   function initSocket() {
     state.socket = io(window.location.origin);
 
@@ -190,7 +303,6 @@ document.addEventListener('DOMContentLoaded', () => {
       renderPeers();
     });
 
-    // Triggered when second peer connects
     state.socket.on('ready-to-connect', () => {
       const targetPeerId = state.peers.find((id) => id !== state.socket.id);
       if (targetPeerId) {
@@ -198,7 +310,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    // Handle incoming signals (Offer, Answer, ICE Candidates)
     state.socket.on('signal', handleSignalMessage);
 
     state.socket.on('room-full', ({ roomId }) => {
@@ -212,6 +323,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.peerConnection.close();
         state.peerConnection = null;
       }
+      elements.transferSection.classList.add('hidden');
       renderPeers();
     });
 
@@ -220,7 +332,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 6. UI Render Helpers
   function updateBadge(text, indicatorClass, textClass) {
     elements.badge.className = `flex items-center gap-2 text-xs font-medium px-3 py-1 rounded-full bg-slate-800 ${textClass} border border-slate-700`;
     elements.badge.innerHTML = `
@@ -250,7 +361,6 @@ document.addEventListener('DOMContentLoaded', () => {
             />
             <span class="absolute bottom-0 right-0 h-4 w-4 rounded-full bg-emerald-400 border-2 border-slate-900"></span>
           </div>
-
           <div class="flex flex-col justify-center min-w-0">
             <p class="text-base font-bold text-slate-100 truncate">${profile.name}</p>
             <span class="inline-block mt-1 text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-md w-max ${isSelf ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'}">
@@ -263,14 +373,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 7. Copy Link Handler
+  // File Dropzone Listeners
+  elements.dropzone.addEventListener('click', () => elements.fileInput.click());
+  
+  elements.fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      sendFile(e.target.files[0]);
+    }
+  });
+
+  elements.dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    elements.dropzone.classList.add('border-indigo-500', 'bg-indigo-500/10');
+  });
+
+  elements.dropzone.addEventListener('dragleave', () => {
+    elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
+  });
+
+  elements.dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
+    if (e.dataTransfer.files.length > 0) {
+      sendFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  // Copy Link Handler
   elements.btnCopyLink.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(elements.shareUrlInput.value);
       const originalText = elements.btnCopyLink.textContent;
       elements.btnCopyLink.textContent = 'Copied!';
       elements.btnCopyLink.classList.replace('bg-indigo-600', 'bg-emerald-600');
-
       setTimeout(() => {
         elements.btnCopyLink.textContent = originalText;
         elements.btnCopyLink.classList.replace('bg-emerald-600', 'bg-indigo-600');
@@ -280,7 +415,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Entry Point Execution
   initRoom();
   initSocket();
 });
