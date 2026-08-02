@@ -20,7 +20,6 @@ document.addEventListener('DOMContentLoaded', () => {
     writableStream: null,
 
     // Transfer & Speed Metrics
-    fileQueue: [],
     isTransferring: false,
     transferStartTime: 0,
     lastMetricTime: 0,
@@ -123,26 +122,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 4000);
   }
 
-  // 2. DOM Elements
+  // 2. DOM Elements Selection (Safe Resolver)
+  const getEl = (id) => document.getElementById(id);
+
   const elements = {
-    badge: document.getElementById('connection-badge'),
-    roomCodeDisplay: document.getElementById('room-code-display'),
-    shareUrlInput: document.getElementById('share-url-input'),
-    btnCopyLink: document.getElementById('btn-copy-link'),
-    qrContainer: document.getElementById('qrcode'),
-    peersList: document.getElementById('peers-list'),
-    peerPlaceholder: document.getElementById('peer-placeholder'),
-    transferSection: document.getElementById('transfer-section'),
-    dropzone: document.getElementById('dropzone'),
-    fileInput: document.getElementById('file-input'),
-    progressContainer: document.getElementById('progress-container'),
-    transferFilename: document.getElementById('transfer-filename'),
-    transferPercentage: document.getElementById('transfer-percentage'),
-    progressBar: document.getElementById('progress-bar'),
-    transferStatus: document.getElementById('transfer-status'),
-    transferSpeed: document.getElementById('transfer-speed'),
-    transferEta: document.getElementById('transfer-eta'),
-    btnCancelTransfer: document.getElementById('btn-cancel-transfer')
+    badge: getEl('connection-badge'),
+    roomCodeDisplay: getEl('room-code-display'),
+    shareUrlInput: getEl('share-url-input'),
+    btnCopyLink: getEl('btn-copy-link'),
+    qrContainer: getEl('qrcode'),
+    peersList: getEl('peers-list'),
+    peerPlaceholder: getEl('peer-placeholder'),
+    transferSection: getEl('transfer-section'),
+    dropzone: getEl('dropzone'),
+    fileInput: getEl('file-input'),
+    progressContainer: getEl('progress-container'),
+    transferFilename: getEl('transfer-filename'),
+    transferPercentage: getEl('transfer-percentage'),
+    progressBar: getEl('progress-bar'),
+    transferStatus: getEl('transfer-status'),
+    transferSpeed: getEl('transfer-speed'),
+    transferEta: getEl('transfer-eta'),
+    btnCancelTransfer: getEl('btn-cancel-transfer')
   };
 
   // 3. Room & QR Initialization
@@ -154,19 +155,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     state.roomId = roomId;
 
-    elements.roomCodeDisplay.textContent = state.roomId;
+    if (elements.roomCodeDisplay) elements.roomCodeDisplay.textContent = state.roomId;
     const fullShareUrl = `${window.location.origin}${window.location.pathname}#room=${state.roomId}`;
-    elements.shareUrlInput.value = fullShareUrl;
+    if (elements.shareUrlInput) elements.shareUrlInput.value = fullShareUrl;
 
-    elements.qrContainer.innerHTML = '';
-    state.qrCodeInstance = new QRCode(elements.qrContainer, {
-      text: fullShareUrl,
-      width: 140,
-      height: 140,
-      colorDark: '#0f172a',
-      colorLight: '#ffffff',
-      correctLevel: QRCode.CorrectLevel.M
-    });
+    if (elements.qrContainer && typeof QRCode !== 'undefined') {
+      elements.qrContainer.innerHTML = '';
+      state.qrCodeInstance = new QRCode(elements.qrContainer, {
+        text: fullShareUrl,
+        width: 140,
+        height: 140,
+        colorDark: '#0f172a',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    }
   }
 
   // 4. WebRTC Connection Setup
@@ -179,7 +182,7 @@ document.addEventListener('DOMContentLoaded', () => {
     state.peerConnection = pc;
 
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
+      if (event.candidate && state.socket) {
         state.socket.emit('signal', {
           targetId: targetPeerId,
           signalData: { type: 'candidate', candidate: event.candidate }
@@ -191,10 +194,10 @@ document.addEventListener('DOMContentLoaded', () => {
       console.log('P2P State:', pc.connectionState);
       if (pc.connectionState === 'connected') {
         updateBadge('P2P Connection Established (Encrypted)', 'bg-emerald-500', 'text-emerald-400');
-        elements.transferSection.classList.remove('hidden');
+        if (elements.transferSection) elements.transferSection.classList.remove('hidden');
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         updateBadge('P2P Connection Lost', 'bg-rose-500', 'text-rose-400');
-        elements.transferSection.classList.add('hidden');
+        if (elements.transferSection) elements.transferSection.classList.add('hidden');
       }
     };
 
@@ -212,12 +215,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     state.dataChannel.onopen = () => {
       console.log('DataChannel OPEN');
-      elements.transferSection.classList.remove('hidden');
+      if (elements.transferSection) elements.transferSection.classList.remove('hidden');
     };
 
     state.dataChannel.onclose = () => {
       console.log('DataChannel CLOSED');
-      elements.transferSection.classList.add('hidden');
+      if (elements.transferSection) elements.transferSection.classList.add('hidden');
     };
 
     state.dataChannel.onmessage = handleIncomingData;
@@ -266,14 +269,15 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    state.isTransferring = true;
     state.transferCancelled = false;
     state.transferStartTime = Date.now();
     state.lastMetricTime = Date.now();
     state.lastMetricBytes = 0;
 
-    elements.progressContainer.classList.remove('hidden');
-    elements.transferFilename.textContent = file.name;
-    elements.transferStatus.textContent = 'Waiting for receiver...';
+    if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
+    if (elements.transferFilename) elements.transferFilename.textContent = file.name;
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver...';
 
     // Metadata Header
     const metadata = {
@@ -295,7 +299,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }, 5000);
     });
 
-    elements.transferStatus.textContent = 'Sending...';
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
 
     const arrayBuffer = await file.arrayBuffer();
     let offset = 0;
@@ -308,6 +312,7 @@ document.addEventListener('DOMContentLoaded', () => {
             state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
             resetTransferUI('Sending cancelled');
             showToast(`Cancelled sending ${file.name}`, 'info');
+            state.isTransferring = false;
             resolve();
             return;
           }
@@ -327,8 +332,9 @@ document.addEventListener('DOMContentLoaded', () => {
           updateTransferMetrics(offset, file.size);
         }
 
-        elements.transferStatus.textContent = 'Completed!';
+        if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
         showToast(`Sent ${file.name} successfully`, 'success');
+        state.isTransferring = false;
         setTimeout(() => resetTransferUI(), 3000);
         resolve();
       };
@@ -355,6 +361,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (parsed.type === 'metadata') {
+          state.isTransferring = true;
           state.incomingFileInfo = parsed;
           state.receivedChunks = [];
           state.receivedSize = 0;
@@ -365,9 +372,9 @@ document.addEventListener('DOMContentLoaded', () => {
           state.fileHandle = null;
           state.writableStream = null;
 
-          elements.progressContainer.classList.remove('hidden');
-          elements.transferFilename.textContent = parsed.name;
-          elements.transferStatus.textContent = 'Preparing save location...';
+          if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
+          if (elements.transferFilename) elements.transferFilename.textContent = parsed.name;
+          if (elements.transferStatus) elements.transferStatus.textContent = 'Preparing save location...';
 
           if ('showSaveFilePicker' in window) {
             try {
@@ -375,12 +382,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 suggestedName: parsed.name
               });
               state.writableStream = await state.fileHandle.createWritable();
-              elements.transferStatus.textContent = 'Streaming to disk...';
+              if (elements.transferStatus) elements.transferStatus.textContent = 'Streaming to disk...';
             } catch (err) {
-              elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
+              if (elements.transferStatus) elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
             }
           } else {
-            elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
+            if (elements.transferStatus) elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
           }
 
           if (state.dataChannel && state.dataChannel.readyState === 'open') {
@@ -399,6 +406,7 @@ document.addEventListener('DOMContentLoaded', () => {
           state.receivedChunks = [];
           state.writableStream = null;
           state.fileHandle = null;
+          state.isTransferring = false;
           resetTransferUI('Peer cancelled transfer');
           showToast('Sender cancelled transfer', 'error');
           return;
@@ -424,11 +432,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       updateTransferMetrics(state.receivedSize, state.incomingFileInfo.size);
 
-      // Finished!
+      // Transfer Completed
       if (state.receivedSize >= state.incomingFileInfo.size) {
         if (state.writableStream) {
           await state.writableStream.close();
-          elements.transferStatus.textContent = 'Saved to disk!';
+          if (elements.transferStatus) elements.transferStatus.textContent = 'Saved to disk!';
           showToast(`Saved to disk: ${state.incomingFileInfo.name}`, 'success');
         } else {
           const blob = new Blob(state.receivedChunks, { 
@@ -441,7 +449,7 @@ document.addEventListener('DOMContentLoaded', () => {
           a.click();
           URL.revokeObjectURL(url);
 
-          elements.transferStatus.textContent = 'Downloaded!';
+          if (elements.transferStatus) elements.transferStatus.textContent = 'Downloaded!';
           showToast(`Downloaded ${state.incomingFileInfo.name}`, 'success');
         }
 
@@ -449,6 +457,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.receivedChunks = [];
         state.writableStream = null;
         state.fileHandle = null;
+        state.isTransferring = false;
 
         setTimeout(() => resetTransferUI(), 3000);
       }
@@ -460,13 +469,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!totalBytes || totalBytes === 0) return;
 
     const percent = Math.min(100, Math.round((currentBytes / totalBytes) * 100));
-    elements.progressBar.style.width = `${percent}%`;
-    elements.transferPercentage.textContent = `${percent}%`;
+    if (elements.progressBar) elements.progressBar.style.width = `${percent}%`;
+    if (elements.transferPercentage) elements.transferPercentage.textContent = `${percent}%`;
 
     const now = Date.now();
     const timeDelta = (now - state.lastMetricTime) / 1000;
 
-    // Update speed/ETA every 300ms window
     if (timeDelta >= 0.3) {
       const bytesDelta = currentBytes - state.lastMetricBytes;
       const bytesPerSec = bytesDelta / timeDelta;
@@ -487,16 +495,16 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function resetTransferUI(statusText = '') {
-    if (statusText) {
+    if (statusText && elements.transferStatus) {
       elements.transferStatus.textContent = statusText;
     }
-    elements.progressBar.style.width = '0%';
-    elements.transferPercentage.textContent = '0%';
+    if (elements.progressBar) elements.progressBar.style.width = '0%';
+    if (elements.transferPercentage) elements.transferPercentage.textContent = '0%';
     if (elements.transferSpeed) elements.transferSpeed.textContent = '0 KB/s';
     if (elements.transferEta) elements.transferEta.textContent = 'ETA: --';
 
     setTimeout(() => {
-      if (!state.incomingFileInfo && !state.isTransferring) {
+      if (!state.incomingFileInfo && !state.isTransferring && elements.progressContainer) {
         elements.progressContainer.classList.add('hidden');
       }
     }, 2500);
@@ -516,6 +524,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 8. Socket & UI Handlers
   function initSocket() {
+    if (typeof io === 'undefined') {
+      console.warn('Socket.io client SDK not found.');
+      return;
+    }
+
     state.socket = io(window.location.origin);
 
     state.socket.on('connect', () => {
@@ -549,7 +562,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.peerConnection.close();
         state.peerConnection = null;
       }
-      elements.transferSection.classList.add('hidden');
+      if (elements.transferSection) elements.transferSection.classList.add('hidden');
       renderPeers();
     });
 
@@ -559,6 +572,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateBadge(text, indicatorClass, textClass) {
+    if (!elements.badge) return;
     elements.badge.className = `flex items-center gap-2 text-xs font-medium px-3 py-1 rounded-full bg-slate-800 ${textClass} border border-slate-700`;
     elements.badge.innerHTML = `
       <span class="h-2 w-2 rounded-full ${indicatorClass}"></span>
@@ -567,23 +581,26 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderPeers() {
+    if (!elements.peersList) return;
     elements.peersList.innerHTML = '';
 
     if (state.peers.length <= 1) {
-      elements.peersList.appendChild(elements.peerPlaceholder);
+      if (elements.peerPlaceholder) {
+        elements.peersList.appendChild(elements.peerPlaceholder);
+      }
     } else {
       state.peers.forEach((peerId) => {
         const isSelf = peerId === state.socket.id;
         const profile = getProfileForSocket(peerId);
 
         const card = document.createElement('div');
-        card.className = 'flex flex-row items-center p-4 rounded-xl bg-slate-900/80 border border-slate-700/70 gap-4 shadow-md';
+        card.className = 'flex flex-row items-center p-4 rounded-xl bg-white/5 border border-white/10 backdrop-blur-md gap-4 shadow-xl';
         card.innerHTML = `
           <div class="relative shrink-0">
             <img 
               src="${profile.avatar}" 
               alt="${profile.name}" 
-              class="h-16 w-16 rounded-full bg-slate-800 p-1 border-2 ${isSelf ? 'border-indigo-500' : 'border-emerald-500'}"
+              class="h-16 w-16 rounded-full bg-white/10 p-1 border-2 ${isSelf ? 'border-indigo-400' : 'border-emerald-400'}"
             />
             <span class="absolute bottom-0 right-0 h-4 w-4 rounded-full bg-emerald-400 border-2 border-slate-900"></span>
           </div>
@@ -599,48 +616,53 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // File Dropzone Listeners
-  elements.dropzone.addEventListener('click', () => elements.fileInput.click());
-  
-  elements.fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) {
-      sendFile(e.target.files[0]);
-    }
-  });
+  // Dropzone & File Listeners
+  if (elements.dropzone && elements.fileInput) {
+    elements.dropzone.addEventListener('click', () => elements.fileInput.click());
 
-  elements.dropzone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    elements.dropzone.classList.add('border-indigo-500', 'bg-indigo-500/10');
-  });
+    elements.fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        sendFile(e.target.files[0]);
+      }
+    });
 
-  elements.dropzone.addEventListener('dragleave', () => {
-    elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
-  });
+    elements.dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      elements.dropzone.classList.add('border-indigo-500', 'bg-indigo-500/10');
+    });
 
-  elements.dropzone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
-    if (e.dataTransfer.files.length > 0) {
-      sendFile(e.dataTransfer.files[0]);
-    }
-  });
+    elements.dropzone.addEventListener('dragleave', () => {
+      elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
+    });
 
-  // Copy Link Handler
-  elements.btnCopyLink.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(elements.shareUrlInput.value);
-      const originalText = elements.btnCopyLink.textContent;
-      elements.btnCopyLink.textContent = 'Copied!';
-      elements.btnCopyLink.classList.replace('bg-indigo-600', 'bg-emerald-600');
-      setTimeout(() => {
-        elements.btnCopyLink.textContent = originalText;
-        elements.btnCopyLink.classList.replace('bg-emerald-600', 'bg-indigo-600');
-      }, 2000);
-    } catch (err) {
-      console.error('Failed to copy share link:', err);
-    }
-  });
+    elements.dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
+      if (e.dataTransfer.files.length > 0) {
+        sendFile(e.dataTransfer.files[0]);
+      }
+    });
+  }
 
+  // Copy Share Link Listener
+  if (elements.btnCopyLink && elements.shareUrlInput) {
+    elements.btnCopyLink.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(elements.shareUrlInput.value);
+        const originalText = elements.btnCopyLink.textContent;
+        elements.btnCopyLink.textContent = 'Copied!';
+        elements.btnCopyLink.classList.replace('bg-indigo-600', 'bg-emerald-600');
+        setTimeout(() => {
+          elements.btnCopyLink.textContent = originalText;
+          elements.btnCopyLink.classList.replace('bg-emerald-600', 'bg-indigo-600');
+        }, 2000);
+      } catch (err) {
+        console.error('Failed to copy share link:', err);
+      }
+    });
+  }
+
+  // Initialize
   initRoom();
   initSocket();
 });

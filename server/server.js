@@ -25,7 +25,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/index.html'));
 });
 
-// Room tracking structure: { roomId: Set(socketIds) }
+// Room tracking structure: Map<roomId, Set<socketId>>
 const rooms = new Map();
 
 io.on('connection', (socket) => {
@@ -37,6 +37,18 @@ io.on('connection', (socket) => {
     }
 
     const roomPeers = rooms.get(roomId);
+
+    // Prune stale/disconnected sockets from the room set before checking size
+    for (const id of Array.from(roomPeers)) {
+      if (!io.sockets.sockets.has(id)) {
+        roomPeers.delete(id);
+      }
+    }
+
+    // If this socket is already in the room, don't re-add
+    if (roomPeers.has(socket.id)) {
+      return;
+    }
 
     // Enforce max 2 peers per P2P transfer room
     if (roomPeers.size >= 2) {
@@ -71,24 +83,39 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('disconnect', () => {
-    console.log(`[Socket Disconnected]: ${socket.id}`);
+  // Handle peer disconnect immediately when tab closes or refreshes
+  socket.on('disconnecting', () => {
     const roomId = socket.roomId;
-
     if (roomId && rooms.has(roomId)) {
       const roomPeers = rooms.get(roomId);
       roomPeers.delete(socket.id);
 
+      const remainingPeers = Array.from(roomPeers);
+
+      // Clean up empty rooms
       if (roomPeers.size === 0) {
         rooms.delete(roomId);
       } else {
-        socket.to(roomId).emit('peer-disconnected', { peerId: socket.id });
+        // Notify remaining peers
+        socket.to(roomId).emit('peer-left', {
+          peerId: socket.id,
+          roomSize: roomPeers.size
+        });
+
+        socket.to(roomId).emit('peer-disconnected', {
+          peerId: socket.id
+        });
+
         io.to(roomId).emit('room-peers', {
           isInitiator: true,
-          peers: Array.from(roomPeers)
+          peers: remainingPeers
         });
       }
     }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`[Socket Disconnected]: ${socket.id}`);
   });
 });
 
