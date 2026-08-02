@@ -1,46 +1,69 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3000;
-const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || '*';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
 const io = new Server(server, {
   cors: {
-    origin: ALLOWED_ORIGIN,
+    origin: CORS_ORIGIN,
     methods: ['GET', 'POST']
   }
 });
 
-// Serve client static files
+// Serve static frontend assets
 app.use(express.static(path.join(__dirname, '../client')));
 
-// Socket.io Room Logic
+// SPA Fallback
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/index.html'));
+});
+
+// Room tracking structure: { roomId: Set(socketIds) }
+const rooms = new Map();
+
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(`[Socket Connected]: ${socket.id}`);
 
   socket.on('create-or-join-room', (roomId) => {
-    const room = io.sockets.adapter.rooms.get(roomId);
-    const numClients = room ? room.size : 0;
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, new Set());
+    }
 
-    if (numClients === 0) {
-      socket.join(roomId);
-      socket.emit('room-peers', { isInitiator: true, peers: [socket.id] });
-    } else if (numClients === 1) {
-      socket.join(roomId);
-      const peers = Array.from(io.sockets.adapter.rooms.get(roomId));
-      io.to(roomId).emit('room-peers', { isInitiator: false, peers });
-      io.to(roomId).emit('ready-to-connect');
-    } else {
+    const roomPeers = rooms.get(roomId);
+
+    // Enforce max 2 peers per P2P transfer room
+    if (roomPeers.size >= 2) {
       socket.emit('room-full', { roomId });
+      return;
+    }
+
+    roomPeers.add(socket.id);
+    socket.join(roomId);
+    socket.roomId = roomId;
+
+    const peersArray = Array.from(roomPeers);
+    const isInitiator = peersArray.length === 1;
+
+    // Send updated peer list to everyone in room
+    io.to(roomId).emit('room-peers', {
+      isInitiator,
+      peers: peersArray
+    });
+
+    // When 2 peers join, trigger connection signaling
+    if (roomPeers.size === 2) {
+      io.to(roomId).emit('ready-to-connect');
     }
   });
 
+  // Relay WebRTC signaling messages (offers, answers, candidates)
   socket.on('signal', ({ targetId, signalData }) => {
     io.to(targetId).emit('signal', {
       senderId: socket.id,
@@ -48,19 +71,27 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('disconnecting', () => {
-    for (const roomId of socket.rooms) {
-      if (roomId !== socket.id) {
+  socket.on('disconnect', () => {
+    console.log(`[Socket Disconnected]: ${socket.id}`);
+    const roomId = socket.roomId;
+
+    if (roomId && rooms.has(roomId)) {
+      const roomPeers = rooms.get(roomId);
+      roomPeers.delete(socket.id);
+
+      if (roomPeers.size === 0) {
+        rooms.delete(roomId);
+      } else {
         socket.to(roomId).emit('peer-disconnected', { peerId: socket.id });
+        io.to(roomId).emit('room-peers', {
+          isInitiator: true,
+          peers: Array.from(roomPeers)
+        });
       }
     }
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`FileShare Server running on http://localhost:${PORT}`);
+  console.log(`>>> WebRTC Transfer Server active on http://localhost:${PORT}`);
 });
