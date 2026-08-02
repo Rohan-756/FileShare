@@ -9,11 +9,24 @@ document.addEventListener('DOMContentLoaded', () => {
     peerConnection: null,
     dataChannel: null,
 
-    // File transfer state
+    // Incoming file state
     incomingFileInfo: null,
     receivedChunks: [],
     receivedSize: 0,
-    CHUNK_SIZE: 16 * 1024 // 16KB per chunk
+    CHUNK_SIZE: 16 * 1024, // 16KB per chunk
+
+    // Disk Stream handles
+    fileHandle: null,
+    writableStream: null,
+
+    // Outgoing & Transfer metrics state
+    fileQueue: [],
+    isTransferring: false,
+    transferStartTime: 0,
+    transferCancelled: false,
+
+    // Handshake resolver
+    receiverReadyResolver: null
   };
 
   const ICE_SERVERS = {
@@ -32,6 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
     { name: 'Shadow Pulse', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=ShadowPulse' }
   ];
 
+  // Helper Utilities
   function generateRoomId() {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
@@ -49,6 +63,43 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const index = Math.abs(hash) % PROFILE_POOL.length;
     return PROFILE_POOL[index];
+  }
+
+  function formatBytes(bytes, decimals = 2) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  }
+
+  function showToast(message, type = 'info') {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toast-container';
+      container.className = 'fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none';
+      document.body.appendChild(container);
+    }
+
+    const toast = document.createElement('div');
+    const bgClass = type === 'error' ? 'bg-rose-900/90 border-rose-500 text-rose-200' :
+                    type === 'success' ? 'bg-emerald-900/90 border-emerald-500 text-emerald-200' :
+                    'bg-slate-800/90 border-indigo-500 text-slate-200';
+
+    toast.className = `p-3 rounded-xl border shadow-xl text-xs font-medium backdrop-blur-md transition-all duration-300 transform translate-y-2 opacity-0 pointer-events-auto ${bgClass}`;
+    toast.textContent = message;
+
+    container.appendChild(toast);
+    requestAnimationFrame(() => {
+      toast.classList.remove('translate-y-2', 'opacity-0');
+    });
+
+    setTimeout(() => {
+      toast.classList.add('opacity-0', 'translate-y-2');
+      setTimeout(() => toast.remove(), 300);
+    }, 4000);
   }
 
   // 2. DOM Elements
@@ -184,18 +235,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 5. File Transfer Engine (Chunking & Receiving)
+  // 5. File Sender Engine
   async function sendFile(file) {
     if (!state.dataChannel || state.dataChannel.readyState !== 'open') {
-      alert('Peer connection not open yet!');
+      showToast('Peer connection is not open!', 'error');
       return;
     }
 
+    state.transferCancelled = false;
+    state.transferStartTime = Date.now();
+
     elements.progressContainer.classList.remove('hidden');
     elements.transferFilename.textContent = file.name;
-    elements.transferStatus.textContent = 'Sending file...';
+    elements.transferStatus.textContent = 'Waiting for receiver...';
 
-    // 1. Send metadata JSON first
+    // 1. Send Metadata Header
     const metadata = {
       type: 'metadata',
       name: file.name,
@@ -204,91 +258,206 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     state.dataChannel.send(JSON.stringify(metadata));
 
-    // 2. Read and stream chunks
+    // 2. Wait for receiver ready signal
+    await new Promise((resolve) => {
+      state.receiverReadyResolver = resolve;
+
+      // Timeout safety net (5 seconds)
+      setTimeout(() => {
+        if (state.receiverReadyResolver) {
+          console.warn('Ack timeout reached, sending anyway...');
+          state.receiverReadyResolver = null;
+          resolve();
+        }
+      }, 5000);
+    });
+
+    elements.transferStatus.textContent = 'Sending...';
+
+    // 3. Read & Stream Chunks
     const arrayBuffer = await file.arrayBuffer();
     let offset = 0;
+    state.dataChannel.bufferedAmountLowThreshold = 65536;
 
-    state.dataChannel.bufferedAmountLowThreshold = 65536; // 64KB backpressure threshold
+    return new Promise((resolve) => {
+      const sendChunks = () => {
+        while (offset < file.size) {
+          if (state.transferCancelled) {
+            state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
+            resetTransferUI('Sending cancelled');
+            showToast(`Cancelled sending ${file.name}`, 'info');
+            resolve();
+            return;
+          }
 
-    const sendChunks = () => {
-      while (offset < file.size) {
-        // Prevent DataChannel buffer overflow
-        if (state.dataChannel.bufferedAmount > state.dataChannel.bufferedAmountLowThreshold) {
-          state.dataChannel.onbufferedamountlow = () => {
-            state.dataChannel.onbufferedamountlow = null;
-            sendChunks();
-          };
+          if (state.dataChannel.bufferedAmount > state.dataChannel.bufferedAmountLowThreshold) {
+            state.dataChannel.onbufferedamountlow = () => {
+              state.dataChannel.onbufferedamountlow = null;
+              sendChunks();
+            };
+            return;
+          }
+
+          const chunk = arrayBuffer.slice(offset, offset + state.CHUNK_SIZE);
+          state.dataChannel.send(chunk);
+          offset += chunk.byteLength;
+
+          updateTransferMetrics(offset, file.size);
+        }
+
+        elements.transferStatus.textContent = 'Completed!';
+        showToast(`Sent ${file.name} successfully`, 'success');
+        setTimeout(() => resetTransferUI(), 2500);
+        resolve();
+      };
+
+      sendChunks();
+    });
+  }
+
+  // 6. File Receiver & Message Dispatcher
+  async function handleIncomingData(event) {
+    const data = event.data;
+
+    // A. Control String Messages
+    if (typeof data === 'string') {
+      try {
+        const parsed = JSON.parse(data);
+
+        if (parsed.type === 'receiver-ready') {
+          if (state.receiverReadyResolver) {
+            state.receiverReadyResolver();
+            state.receiverReadyResolver = null;
+          }
           return;
         }
 
-        const chunk = arrayBuffer.slice(offset, offset + state.CHUNK_SIZE);
-        state.dataChannel.send(chunk);
-        offset += chunk.byteLength;
+        if (parsed.type === 'metadata') {
+          state.incomingFileInfo = parsed;
+          state.receivedChunks = [];
+          state.receivedSize = 0;
+          state.transferStartTime = Date.now();
+          state.transferCancelled = false;
+          state.fileHandle = null;
+          state.writableStream = null;
 
-        // Update progress UI
-        const percent = Math.round((offset / file.size) * 100);
-        elements.progressBar.style.width = `${percent}%`;
-        elements.transferPercentage.textContent = `${percent}%`;
-      }
+          elements.progressContainer.classList.remove('hidden');
+          elements.transferFilename.textContent = parsed.name;
+          elements.transferStatus.textContent = 'Preparing save location...';
 
-      elements.transferStatus.textContent = 'Transfer completed!';
-      setTimeout(() => elements.progressContainer.classList.add('hidden'), 3000);
-    };
+          if ('showSaveFilePicker' in window) {
+            try {
+              state.fileHandle = await window.showSaveFilePicker({
+                suggestedName: parsed.name
+              });
+              state.writableStream = await state.fileHandle.createWritable();
+              elements.transferStatus.textContent = 'Streaming to disk...';
+              showToast('Direct disk stream initiated', 'info');
+            } catch (err) {
+              console.warn('File picker bypassed or failed:', err);
+              elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
+              showToast('Saving to browser memory (fallback mode)', 'info');
+            }
+          } else {
+            elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
+            showToast('Using Blob fallback mode', 'info');
+          }
 
-    sendChunks();
-  }
+          // Emit Ack back to Sender
+          if (state.dataChannel && state.dataChannel.readyState === 'open') {
+            state.dataChannel.send(JSON.stringify({ type: 'receiver-ready' }));
+          }
 
-  function handleIncomingData(event) {
-    const data = event.data;
+          updateTransferMetrics(0, parsed.size);
+          return;
+        }
 
-    // Handle Metadata String Header
-    if (typeof data === 'string') {
-      const parsed = JSON.parse(data);
-      if (parsed.type === 'metadata') {
-        state.incomingFileInfo = parsed;
-        state.receivedChunks = [];
-        state.receivedSize = 0;
-
-        elements.progressContainer.classList.remove('hidden');
-        elements.transferFilename.textContent = parsed.name;
-        elements.transferStatus.textContent = 'Receiving file...';
-        elements.progressBar.style.width = '0%';
-        elements.transferPercentage.textContent = '0%';
+        if (parsed.type === 'cancel') {
+          if (state.writableStream) {
+            await state.writableStream.abort();
+          }
+          state.incomingFileInfo = null;
+          state.receivedChunks = [];
+          state.writableStream = null;
+          state.fileHandle = null;
+          resetTransferUI('Peer cancelled transfer');
+          showToast('Sender cancelled the transfer', 'error');
+          return;
+        }
+      } catch (err) {
+        console.error('Error parsing signaling text data:', err);
       }
       return;
     }
 
-    // Handle Binary ArrayBuffer Chunks
-    if (data instanceof ArrayBuffer && state.incomingFileInfo) {
-      state.receivedChunks.push(data);
-      state.receivedSize += data.byteLength;
+    // B. Binary Chunks
+    if ((data instanceof ArrayBuffer || ArrayBuffer.isView(data)) && state.incomingFileInfo) {
+      if (state.transferCancelled) return;
 
-      const percent = Math.round((state.receivedSize / state.incomingFileInfo.size) * 100);
-      elements.progressBar.style.width = `${percent}%`;
-      elements.transferPercentage.textContent = `${percent}%`;
+      const chunk = data instanceof ArrayBuffer ? data : data.buffer;
+      state.receivedSize += chunk.byteLength;
 
-      // Transfer Finished!
+      if (state.writableStream) {
+        await state.writableStream.write(chunk);
+      } else {
+        state.receivedChunks.push(chunk);
+      }
+
+      updateTransferMetrics(state.receivedSize, state.incomingFileInfo.size);
+
+      // Transfer Finished
       if (state.receivedSize >= state.incomingFileInfo.size) {
-        const blob = new Blob(state.receivedChunks, { type: state.incomingFileInfo.mimeType || 'application/octet-stream' });
-        
-        // Trigger Automatic Browser Download
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = state.incomingFileInfo.name;
-        a.click();
-        URL.revokeObjectURL(url);
+        if (state.writableStream) {
+          await state.writableStream.close();
+          elements.transferStatus.textContent = 'Saved directly to disk!';
+          showToast(`File saved to disk: ${state.incomingFileInfo.name}`, 'success');
+        } else {
+          const blob = new Blob(state.receivedChunks, { 
+            type: state.incomingFileInfo.mimeType || 'application/octet-stream' 
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = state.incomingFileInfo.name;
+          a.click();
+          URL.revokeObjectURL(url);
 
-        elements.transferStatus.textContent = 'File downloaded successfully!';
+          elements.transferStatus.textContent = 'Downloaded!';
+          showToast(`Downloaded ${state.incomingFileInfo.name}`, 'success');
+        }
+
         state.incomingFileInfo = null;
         state.receivedChunks = [];
+        state.writableStream = null;
+        state.fileHandle = null;
 
-        setTimeout(() => elements.progressContainer.classList.add('hidden'), 4000);
+        setTimeout(() => resetTransferUI(), 2500);
       }
     }
   }
 
-  // 6. Socket & UI Handlers
+  // Progress Bar & UI Updater
+  function updateTransferMetrics(currentBytes, totalBytes) {
+    if (!totalBytes || totalBytes === 0) return;
+    const percent = Math.min(100, Math.round((currentBytes / totalBytes) * 100));
+    elements.progressBar.style.width = `${percent}%`;
+    elements.transferPercentage.textContent = `${percent}%`;
+  }
+
+  function resetTransferUI(statusText = '') {
+    if (statusText) {
+      elements.transferStatus.textContent = statusText;
+    }
+    elements.progressBar.style.width = '0%';
+    elements.transferPercentage.textContent = '0%';
+    setTimeout(() => {
+      if (!state.incomingFileInfo) {
+        elements.progressContainer.classList.add('hidden');
+      }
+    }, 2000);
+  }
+
+  // 7. Socket & UI Handlers
   function initSocket() {
     state.socket = io(window.location.origin);
 
