@@ -1,10 +1,47 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // 1. App State
+  // 1. Persistent User Identity Management
+  function getOrCreateLocalUser() {
+    const STORAGE_KEY = 'p2p_user_profile';
+    const savedUser = localStorage.getItem(STORAGE_KEY);
+    
+    if (savedUser) {
+      try {
+        return JSON.parse(savedUser);
+      } catch (e) {
+        console.warn('Failed to parse cached user profile, re-generating.');
+      }
+    }
+
+    const PROFILE_POOL = [
+      { name: 'Neon Cyber', seed: 'NeonCyber' },
+      { name: 'Swift Falcon', seed: 'SwiftFalcon' },
+      { name: 'Quantum Byte', seed: 'QuantumByte' },
+      { name: 'Solar Phoenix', seed: 'SolarPhoenix' },
+      { name: 'Cosmic Drift', seed: 'CosmicDrift' },
+      { name: 'Shadow Pulse', seed: 'ShadowPulse' }
+    ];
+
+    const randomProfile = PROFILE_POOL[Math.floor(Math.random() * PROFILE_POOL.length)];
+    const uniqueSeed = `${randomProfile.seed}_${Math.random().toString(36).substring(2, 7)}`;
+
+    const newUser = {
+      userId: 'usr_' + Math.random().toString(36).substring(2, 9),
+      name: randomProfile.name,
+      avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${uniqueSeed}`
+    };
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newUser));
+    return newUser;
+  }
+
+  const localUser = getOrCreateLocalUser();
+
+  // 2. App State
   const state = {
     socket: null,
     roomId: null,
     isInitiator: false,
-    peers: [],
+    peers: [], // Holds objects: { socketId, userId, name, avatar }
     qrCodeInstance: null,
     peerConnection: null,
     dataChannel: null,
@@ -48,15 +85,6 @@ document.addEventListener('DOMContentLoaded', () => {
     ]
   };
 
-  const PROFILE_POOL = [
-    { name: 'Neon Cyber', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=NeonCyber' },
-    { name: 'Swift Falcon', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=SwiftFalcon' },
-    { name: 'Quantum Byte', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=QuantumByte' },
-    { name: 'Solar Phoenix', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=SolarPhoenix' },
-    { name: 'Cosmic Drift', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=CosmicDrift' },
-    { name: 'Shadow Pulse', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=ShadowPulse' }
-  ];
-
   // Helper Utilities
   function generateRoomId() {
     return Math.floor(100000 + Math.random() * 900000).toString();
@@ -66,15 +94,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const hash = window.location.hash.substring(1);
     const params = new URLSearchParams(hash);
     return params.get('room');
-  }
-
-  function getProfileForSocket(socketId) {
-    let hash = 0;
-    for (let i = 0; i < socketId.length; i++) {
-      hash = socketId.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    const index = Math.abs(hash) % PROFILE_POOL.length;
-    return PROFILE_POOL[index];
   }
 
   function formatBytes(bytes, decimals = 2) {
@@ -122,7 +141,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 4000);
   }
 
-  // 2. DOM Elements Selection (Safe Resolver)
+  // 3. DOM Elements Selection (Safe Resolver)
   const getEl = (id) => document.getElementById(id);
 
   const elements = {
@@ -146,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCancelTransfer: getEl('btn-cancel-transfer')
   };
 
-  // 3. Room & QR Initialization
+  // 4. Room & QR Initialization
   function initRoom() {
     let roomId = getRoomIdFromHash();
     if (!roomId) {
@@ -172,7 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 4. WebRTC Connection Setup
+  // 5. WebRTC Connection Setup
   function createPeerConnection(targetPeerId) {
     if (state.peerConnection) {
       state.peerConnection.close();
@@ -262,7 +281,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 5. File Sender Engine
+  // 6. File Sender Engine
   async function sendFile(file) {
     if (!state.dataChannel || state.dataChannel.readyState !== 'open') {
       showToast('Peer connection is not open!', 'error');
@@ -343,7 +362,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 6. File Receiver & Data Dispatcher
+  // 7. File Receiver & Data Dispatcher
   async function handleIncomingData(event) {
     const data = event.data;
 
@@ -464,7 +483,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 7. Speed & ETA Metrics Calculation
+  // 8. Speed & ETA Metrics Calculation
   function updateTransferMetrics(currentBytes, totalBytes) {
     if (!totalBytes || totalBytes === 0) return;
 
@@ -522,7 +541,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 8. Socket & UI Handlers
+  // 9. Socket & UI Handlers
   function initSocket() {
     if (typeof io === 'undefined') {
       console.warn('Socket.io client SDK not found.');
@@ -533,7 +552,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     state.socket.on('connect', () => {
       updateBadge('Connected to Signaling Server', 'bg-emerald-500', 'text-emerald-400');
-      state.socket.emit('create-or-join-room', state.roomId);
+      
+      // Pass both the roomId and the persistent userInfo payload
+      state.socket.emit('create-or-join-room', {
+        roomId: state.roomId,
+        userInfo: localUser
+      });
     });
 
     state.socket.on('room-peers', ({ isInitiator, peers }) => {
@@ -543,9 +567,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     state.socket.on('ready-to-connect', () => {
-      const targetPeerId = state.peers.find((id) => id !== state.socket.id);
-      if (targetPeerId) {
-        startWebRTCOffer(targetPeerId);
+      const targetPeer = state.peers.find((p) => p.socketId !== state.socket.id);
+      if (targetPeer) {
+        startWebRTCOffer(targetPeer.socketId);
       }
     });
 
@@ -557,7 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     state.socket.on('peer-disconnected', ({ peerId }) => {
-      state.peers = state.peers.filter((id) => id !== peerId);
+      state.peers = state.peers.filter((p) => p.socketId !== peerId);
       if (state.peerConnection) {
         state.peerConnection.close();
         state.peerConnection = null;
@@ -580,32 +604,36 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
   }
 
+  // Render peer cards using state.peers objects array
   function renderPeers() {
     if (!elements.peersList) return;
     elements.peersList.innerHTML = '';
 
-    if (state.peers.length <= 1) {
+    if (state.peers.length === 0) {
       if (elements.peerPlaceholder) {
         elements.peersList.appendChild(elements.peerPlaceholder);
       }
     } else {
-      state.peers.forEach((peerId) => {
-        const isSelf = peerId === state.socket.id;
-        const profile = getProfileForSocket(peerId);
+      state.peers.forEach((peer) => {
+        // Fallback checks for simple string array or object array structure
+        const socketId = typeof peer === 'string' ? peer : peer.socketId;
+        const name = peer.name || 'Anonymous Peer';
+        const avatar = peer.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${socketId}`;
+        const isSelf = socketId === state.socket.id;
 
         const card = document.createElement('div');
         card.className = 'flex flex-row items-center p-4 rounded-xl bg-white/5 border border-white/10 backdrop-blur-md gap-4 shadow-xl';
         card.innerHTML = `
           <div class="relative shrink-0">
             <img 
-              src="${profile.avatar}" 
-              alt="${profile.name}" 
+              src="${avatar}" 
+              alt="${name}" 
               class="h-16 w-16 rounded-full bg-white/10 p-1 border-2 ${isSelf ? 'border-indigo-400' : 'border-emerald-400'}"
             />
             <span class="absolute bottom-0 right-0 h-4 w-4 rounded-full bg-emerald-400 border-2 border-slate-900"></span>
           </div>
           <div class="flex flex-col justify-center min-w-0">
-            <p class="text-base font-bold text-slate-100 truncate">${profile.name}</p>
+            <p class="text-base font-bold text-slate-100 truncate">${name}</p>
             <span class="inline-block mt-1 text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-md w-max ${isSelf ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'}">
               ${isSelf ? 'You' : 'Peer'}
             </span>
