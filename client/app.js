@@ -41,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
     socket: null,
     roomId: null,
     isInitiator: false,
-    peers: [], // Holds objects: { socketId, userId, name, avatar }
+    peers: [],
     qrCodeInstance: null,
     peerConnection: null,
     dataChannel: null,
@@ -141,7 +141,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 4000);
   }
 
-  // 3. DOM Elements Selection (Safe Resolver)
+  // 3. DOM Elements Selection
   const getEl = (id) => document.getElementById(id);
 
   const elements = {
@@ -165,15 +165,36 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCancelTransfer: getEl('btn-cancel-transfer')
   };
 
-  // 4. Room & QR Initialization
+  // 4. Room & Dynamic URL Handling
   function initRoom() {
     let roomId = getRoomIdFromHash();
     if (!roomId) {
       roomId = generateRoomId();
       window.location.hash = `room=${roomId}`;
     }
-    state.roomId = roomId;
+    joinRoom(roomId);
+  }
 
+  function joinRoom(newRoomId) {
+    if (state.roomId === newRoomId && state.socket && state.socket.connected) {
+      return;
+    }
+
+    // Close ongoing WebRTC connection on room switch
+    if (state.peerConnection) {
+      state.peerConnection.close();
+      state.peerConnection = null;
+    }
+    state.dataChannel = null;
+
+    if (elements.transferSection) {
+      elements.transferSection.classList.add('hidden');
+    }
+
+    state.roomId = newRoomId;
+    state.peers = [];
+
+    // Update UI elements
     if (elements.roomCodeDisplay) elements.roomCodeDisplay.textContent = state.roomId;
     const fullShareUrl = `${window.location.origin}${window.location.pathname}#room=${state.roomId}`;
     if (elements.shareUrlInput) elements.shareUrlInput.value = fullShareUrl;
@@ -189,7 +210,25 @@ document.addEventListener('DOMContentLoaded', () => {
         correctLevel: QRCode.CorrectLevel.M
       });
     }
+
+    renderPeers();
+
+    // If socket is connected, emit join-room event immediately
+    if (state.socket && state.socket.connected) {
+      state.socket.emit('create-or-join-room', {
+        roomId: state.roomId,
+        userInfo: localUser
+      });
+    }
   }
+
+  // Listen for hash changes in the URL bar directly
+  window.addEventListener('hashchange', () => {
+    const roomId = getRoomIdFromHash();
+    if (roomId) {
+      joinRoom(roomId);
+    }
+  });
 
   // 5. WebRTC Connection Setup
   function createPeerConnection(targetPeerId) {
@@ -298,7 +337,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (elements.transferFilename) elements.transferFilename.textContent = file.name;
     if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver...';
 
-    // Metadata Header
     const metadata = {
       type: 'metadata',
       name: file.name,
@@ -307,7 +345,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     state.dataChannel.send(JSON.stringify(metadata));
 
-    // Wait for Handshake Ready Ack
     await new Promise((resolve) => {
       state.receiverReadyResolver = resolve;
       setTimeout(() => {
@@ -366,7 +403,6 @@ document.addEventListener('DOMContentLoaded', () => {
   async function handleIncomingData(event) {
     const data = event.data;
 
-    // Control Messages
     if (typeof data === 'string') {
       try {
         const parsed = JSON.parse(data);
@@ -436,7 +472,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Binary Chunks
     if ((data instanceof ArrayBuffer || ArrayBuffer.isView(data)) && state.incomingFileInfo) {
       if (state.transferCancelled) return;
 
@@ -451,7 +486,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
       updateTransferMetrics(state.receivedSize, state.incomingFileInfo.size);
 
-      // Transfer Completed
       if (state.receivedSize >= state.incomingFileInfo.size) {
         if (state.writableStream) {
           await state.writableStream.close();
@@ -529,7 +563,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2500);
   }
 
-  // Cancel Handler
   if (elements.btnCancelTransfer) {
     elements.btnCancelTransfer.addEventListener('click', () => {
       state.transferCancelled = true;
@@ -553,7 +586,6 @@ document.addEventListener('DOMContentLoaded', () => {
     state.socket.on('connect', () => {
       updateBadge('Connected to Signaling Server', 'bg-emerald-500', 'text-emerald-400');
       
-      // Pass both the roomId and the persistent userInfo payload
       state.socket.emit('create-or-join-room', {
         roomId: state.roomId,
         userInfo: localUser
@@ -604,7 +636,6 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
   }
 
-  // Render peer cards using state.peers objects array
   function renderPeers() {
     if (!elements.peersList) return;
     elements.peersList.innerHTML = '';
@@ -615,7 +646,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } else {
       state.peers.forEach((peer) => {
-        // Fallback checks for simple string array or object array structure
         const socketId = typeof peer === 'string' ? peer : peer.socketId;
         const name = peer.name || 'Anonymous Peer';
         const avatar = peer.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${socketId}`;
