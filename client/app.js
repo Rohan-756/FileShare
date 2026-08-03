@@ -163,6 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const elements = {
     badge: getEl('connection-badge'),
     roomCodeDisplay: getEl('room-code-display'),
+    btnNewRoom: getEl('btn-new-room'),
     shareUrlInput: getEl('share-url-input'),
     btnCopyLink: getEl('btn-copy-link'),
     qrContainer: getEl('qrcode'),
@@ -182,6 +183,12 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // 4. Room & Dynamic URL Handling
+  function createNewRoom() {
+    const newRoomId = generateRoomId();
+    window.location.hash = `room=${newRoomId}`;
+    showToast(`Created new room: ${newRoomId}`, 'info');
+  }
+
   function initRoom() {
     let roomId = getRoomIdFromHash();
     if (!roomId) {
@@ -728,6 +735,11 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('Failed to copy share link:', err);
       }
     });
+  }
+
+  // New Room Listener
+  if (elements.btnNewRoom) {
+    elements.btnNewRoom.addEventListener('click', createNewRoom);
   }
 
   // Initialize
