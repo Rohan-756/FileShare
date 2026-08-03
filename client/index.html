@@ -33,6 +33,12 @@
             background-size: 400% 400%;
             animation: flowGradient 18s ease infinite;
         }
+
+        /* Fix QRCode sizing canvas */
+        #qrcode img, #qrcode canvas {
+            margin: auto;
+            display: block;
+        }
     </style>
 </head>
 
@@ -40,20 +46,20 @@
     class="relative min-h-screen flex flex-col font-sans antialiased text-slate-100 bg-flowing-mesh overflow-x-hidden">
 
     <!-- Header -->
-    <header class="border-b border-white/10 bg-transparent backdrop-blur-md sticky top-0 z-50">
+    <header class="border-b border-white/10 bg-slate-950/40 backdrop-blur-md sticky top-0 z-50">
         <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2.5">
                 <div
-                    class="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
+                    class="h-8 w-8 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
                     FS
                 </div>
                 <span
-                    class="font-bold text-lg tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+                    class="font-bold text-lg tracking-tight bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
                     FileShare
                 </span>
             </div>
             <div id="connection-badge"
-                class="flex items-center gap-2 text-xs font-medium px-3 py-1 rounded-full glass-panel text-slate-200">
+                class="flex items-center gap-2 text-xs font-medium px-3.5 py-1.5 rounded-full bg-slate-900/80 border border-slate-700/60 text-slate-200 backdrop-blur-md shadow-sm">
                 <span class="h-2 w-2 rounded-full bg-amber-500 animate-pulse"></span>
                 <span>Connecting...</span>
             </div>
@@ -64,55 +70,94 @@
     <main class="flex-1 max-w-4xl w-full mx-auto p-4 md:p-6 flex flex-col gap-6 justify-center">
 
         <!-- Room Card -->
-        <section class="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-2xl backdrop-blur-xl">
-            <div class="text-center max-w-md mx-auto">
+        <section class="bg-white/5 border border-white/10 rounded-2xl p-6 md:p-8 shadow-2xl backdrop-blur-xl">
+            <!-- Header Section -->
+            <div class="text-center max-w-lg mx-auto mb-8">
                 <h1 class="text-2xl font-bold text-white tracking-tight">Peer-to-Peer Pairing</h1>
-                <p class="text-sm text-slate-300/80 mt-1">Scan the QR code or share the room link to connect another
-                    peer directly.</p>
+                <p class="text-sm text-slate-300/80 mt-1.5">
+                    Scan the QR code, share the link, or enter a room code below to connect directly.
+                </p>
             </div>
 
-            <div class="mt-6 flex flex-col sm:flex-row items-center justify-center gap-8">
-                <!-- QR Code Container -->
-                <div
-                    class="bg-white p-3 rounded-xl shadow-inner border border-slate-200 flex items-center justify-center min-w-[160px] min-h-[160px]">
-                    <div id="qrcode"></div>
+            <!-- Content Grid: Left QR / Right Room Controls -->
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-8 items-center">
+                
+                <!-- Left: QR Code Box (4 cols on desktop) -->
+                <div class="md:col-span-5 flex flex-col items-center justify-center p-6 bg-slate-900/50 border border-white/10 rounded-2xl shadow-inner">
+                    <div class="p-3 bg-white rounded-xl shadow-md border border-slate-200">
+                        <div id="qrcode"></div>
+                    </div>
+                    <p class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mt-3">Scan with Mobile</p>
                 </div>
 
-                <!-- Room Information & Share Link -->
-                <div class="flex flex-col gap-4 w-full sm:w-auto">
+                <!-- Right: Room Controls & Inputs (7 cols on desktop) -->
+                <div class="md:col-span-7 flex flex-col gap-5">
+
+                    <!-- Current Room Code Banner -->
+                    <div class="flex items-center justify-between p-3.5 px-4 bg-slate-900/60 border border-slate-700/80 rounded-xl">
+                        <span class="text-xs font-bold tracking-wider uppercase text-slate-400">Current Room Code</span>
+                        <div id="room-code-display" class="text-2xl font-extrabold tracking-widest text-indigo-400 font-mono">
+                            ------
+                        </div>
+                    </div>
+
+                    <!-- Join via Room Code Input -->
                     <div>
-                        <label class="text-xs uppercase font-semibold text-slate-400 tracking-wider">Room Code</label>
-                        <div class="flex items-center gap-3 mt-0.5">
-                            <div id="room-code-display"
-                                class="text-3xl font-mono font-extrabold text-indigo-400 tracking-widest">
-                                ------
-                            </div>
-                            <button id="btn-new-room"
-                                class="bg-white/10 hover:bg-white/20 border border-white/15 text-slate-200 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 shadow-sm active:scale-95">
-                                <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor"
-                                    viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
-                                    </path>
-                                </svg>
-                                New Room
+                        <label for="join-room-code-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">
+                            Join Another Room
+                        </label>
+                        <div class="flex items-center gap-2">
+                            <input
+                                type="text"
+                                id="join-room-code-input"
+                                placeholder="Enter 6-digit code..."
+                                maxlength="6"
+                                class="w-full px-3.5 py-2.5 text-sm bg-slate-900/80 border border-slate-700/80 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono"
+                            />
+                            <button
+                                id="btn-join-room"
+                                class="shrink-0 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-indigo-600/20 transition-all duration-200 active:scale-95"
+                            >
+                                Join
                             </button>
                         </div>
                     </div>
 
+                    <!-- Shareable Link Input -->
                     <div>
-                        <label class="text-xs uppercase font-semibold text-slate-400 tracking-wider">Shareable
-                            Link</label>
-                        <div class="flex items-center gap-2 mt-1">
-                            <input id="share-url-input" type="text" readonly
-                                class="bg-white/5 text-xs text-slate-200 px-3 py-2 rounded-lg border border-white/10 focus:outline-none w-64 select-all font-mono backdrop-blur-md"
-                                value="Generating..." />
-                            <button id="btn-copy-link"
-                                class="bg-indigo-600 min-w-[90px] hover:bg-indigo-500 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-1 shadow-md shadow-indigo-600/20 active:scale-95">
+                        <label for="share-url-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">
+                            Shareable Link
+                        </label>
+                        <div class="flex items-center gap-2">
+                            <input
+                                type="text"
+                                id="share-url-input"
+                                readonly
+                                class="w-full px-3.5 py-2.5 text-xs bg-slate-900/80 border border-slate-700/80 rounded-xl text-slate-300 focus:outline-none font-mono truncate"
+                            />
+                            <button
+                                id="btn-copy-link"
+                                class="shrink-0 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-indigo-600/20 transition-all duration-200 active:scale-95 whitespace-nowrap"
+                            >
                                 Copy Link
                             </button>
                         </div>
                     </div>
+
+                    <!-- Divider -->
+                    <div class="border-t border-white/10 my-0.5"></div>
+
+                    <!-- Create New Room Button -->
+                    <button
+                        id="btn-new-room"
+                        class="w-full py-2.5 px-4 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 active:scale-[0.99]"
+                    >
+                        <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                        Create New Room
+                    </button>
+
                 </div>
             </div>
         </section>
@@ -178,10 +223,10 @@
                 Transfer Room Participants
             </h2>
 
-            <div id="peers-list" class="grid grid-cols-2 gap-3 sm:gap-6">
+            <div id="peers-list" class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-6">
                 <!-- Waiting placeholder -->
                 <div id="peer-placeholder"
-                    class="col-span-2 py-8 text-center text-slate-400 border border-dashed border-white/20 rounded-xl bg-white/5 backdrop-blur-md">
+                    class="col-span-full py-8 text-center text-slate-400 border border-dashed border-white/20 rounded-xl bg-white/5 backdrop-blur-md text-xs font-medium">
                     Waiting for second peer to join room...
                 </div>
             </div>

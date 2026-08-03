@@ -163,6 +163,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const elements = {
     badge: getEl('connection-badge'),
     roomCodeDisplay: getEl('room-code-display'),
+    joinRoomCodeInput: getEl('join-room-code-input'), 
+    btnJoinRoom: getEl('btn-join-room'),
     btnNewRoom: getEl('btn-new-room'),
     shareUrlInput: getEl('share-url-input'),
     btnCopyLink: getEl('btn-copy-link'),
@@ -742,6 +744,38 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.btnNewRoom.addEventListener('click', createNewRoom);
   }
 
+  // Join Room by Code Listener
+  function handleJoinByCode() {
+    if (!elements.joinRoomCodeInput) return;
+    const inputCode = elements.joinRoomCodeInput.value.trim();
+
+    if (!inputCode) {
+      showToast('Please enter a room code', 'error');
+      return;
+    }
+
+    if (inputCode === state.roomId) {
+      showToast('You are already in this room', 'info');
+      return;
+    }
+
+    window.location.hash = `room=${inputCode}`;
+    elements.joinRoomCodeInput.value = '';
+    showToast(`Joining room: ${inputCode}`, 'info');
+  }
+
+  if (elements.btnJoinRoom) {
+    elements.btnJoinRoom.addEventListener('click', handleJoinByCode);
+  }
+
+  if (elements.joinRoomCodeInput) {
+    elements.joinRoomCodeInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        handleJoinByCode();
+      }
+    });
+  }
+  
   // Initialize
   initRoom();
   initSocket();
