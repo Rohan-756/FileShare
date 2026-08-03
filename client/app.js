@@ -141,6 +141,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 4000);
   }
 
+  // Simplified Status Badge Helper
+  function updateBadge(statusText, dotColorClass) {
+    if (!elements.badge) return;
+
+    const isLiveState = dotColorClass.includes('emerald') || dotColorClass.includes('sky');
+
+    elements.badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-200 backdrop-blur-md shadow-sm transition-all duration-200';
+    elements.badge.innerHTML = `
+      <span class="relative flex h-2 w-2">
+        ${isLiveState ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full ${dotColorClass} opacity-75"></span>` : ''}
+        <span class="relative inline-flex rounded-full h-2 w-2 ${dotColorClass}"></span>
+      </span>
+      <span>${statusText}</span>
+    `;
+  }
+
   // 3. DOM Elements Selection
   const getEl = (id) => document.getElementById(id);
 
@@ -215,6 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // If socket is connected, emit join-room event immediately
     if (state.socket && state.socket.connected) {
+      updateBadge('Waiting for peer', 'bg-sky-400');
       state.socket.emit('create-or-join-room', {
         roomId: state.roomId,
         userInfo: localUser
@@ -251,10 +268,10 @@ document.addEventListener('DOMContentLoaded', () => {
     pc.onconnectionstatechange = () => {
       console.log('P2P State:', pc.connectionState);
       if (pc.connectionState === 'connected') {
-        updateBadge('P2P Connection Established (Encrypted)', 'bg-emerald-500', 'text-emerald-400');
+        updateBadge('Connected', 'bg-emerald-400');
         if (elements.transferSection) elements.transferSection.classList.remove('hidden');
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        updateBadge('P2P Connection Lost', 'bg-rose-500', 'text-rose-400');
+        updateBadge('Peer left', 'bg-amber-400');
         if (elements.transferSection) elements.transferSection.classList.add('hidden');
       }
     };
@@ -584,7 +601,7 @@ document.addEventListener('DOMContentLoaded', () => {
     state.socket = io(window.location.origin);
 
     state.socket.on('connect', () => {
-      updateBadge('Connected to Signaling Server', 'bg-emerald-500', 'text-emerald-400');
+      updateBadge('Waiting for peer', 'bg-sky-400');
       
       state.socket.emit('create-or-join-room', {
         roomId: state.roomId,
@@ -608,7 +625,7 @@ document.addEventListener('DOMContentLoaded', () => {
     state.socket.on('signal', handleSignalMessage);
 
     state.socket.on('room-full', ({ roomId }) => {
-      updateBadge(`Room ${roomId} is full!`, 'bg-rose-500', 'text-rose-400');
+      updateBadge('Room full', 'bg-rose-500');
       alert('This transfer room already has 2 connected peers.');
     });
 
@@ -619,21 +636,14 @@ document.addEventListener('DOMContentLoaded', () => {
         state.peerConnection = null;
       }
       if (elements.transferSection) elements.transferSection.classList.add('hidden');
+      
+      updateBadge('Waiting for peer', 'bg-sky-400');
       renderPeers();
     });
 
     state.socket.on('disconnect', () => {
-      updateBadge('Disconnected from Server', 'bg-rose-500', 'text-rose-400');
+      updateBadge('Offline', 'bg-rose-500');
     });
-  }
-
-  function updateBadge(text, indicatorClass, textClass) {
-    if (!elements.badge) return;
-    elements.badge.className = `flex items-center gap-2 text-xs font-medium px-3 py-1 rounded-full bg-slate-800 ${textClass} border border-slate-700`;
-    elements.badge.innerHTML = `
-      <span class="h-2 w-2 rounded-full ${indicatorClass}"></span>
-      <span>${text}</span>
-    `;
   }
 
   function renderPeers() {
