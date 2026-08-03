@@ -67,7 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
     receiverReadyResolver: null
   };
 
-  // STUN + TURN Fallback Configuration for Firewalls/NAT
+  // STUN + TURN Fallback Configuration
   const ICE_SERVERS = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -141,7 +141,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 4000);
   }
 
-  // Simplified Status Badge Helper
   function updateBadge(statusText, dotColorClass) {
     if (!elements.badge) return;
 
@@ -157,13 +156,13 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
   }
 
-  // 3. DOM Elements Selection
+  // 3. DOM Elements
   const getEl = (id) => document.getElementById(id);
 
   const elements = {
     badge: getEl('connection-badge'),
     roomCodeDisplay: getEl('room-code-display'),
-    joinRoomCodeInput: getEl('join-room-code-input'), 
+    joinRoomCodeInput: getEl('join-room-code-input'),
     btnJoinRoom: getEl('btn-join-room'),
     btnNewRoom: getEl('btn-new-room'),
     shareUrlInput: getEl('share-url-input'),
@@ -184,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCancelTransfer: getEl('btn-cancel-transfer')
   };
 
-  // 4. Room & Dynamic URL Handling
+  // 4. Room Management
   function createNewRoom() {
     const newRoomId = generateRoomId();
     window.location.hash = `room=${newRoomId}`;
@@ -205,7 +204,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Close ongoing WebRTC connection on room switch
     if (state.peerConnection) {
       state.peerConnection.close();
       state.peerConnection = null;
@@ -219,7 +217,6 @@ document.addEventListener('DOMContentLoaded', () => {
     state.roomId = newRoomId;
     state.peers = [];
 
-    // Update UI elements
     if (elements.roomCodeDisplay) elements.roomCodeDisplay.textContent = state.roomId;
     const fullShareUrl = `${window.location.origin}${window.location.pathname}#room=${state.roomId}`;
     if (elements.shareUrlInput) elements.shareUrlInput.value = fullShareUrl;
@@ -238,7 +235,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     renderPeers();
 
-    // If socket is connected, emit join-room event immediately
     if (state.socket && state.socket.connected) {
       updateBadge('Waiting for peer', 'bg-sky-400');
       state.socket.emit('create-or-join-room', {
@@ -248,7 +244,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Listen for hash changes in the URL bar directly
   window.addEventListener('hashchange', () => {
     const roomId = getRoomIdFromHash();
     if (roomId) {
@@ -275,7 +270,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('P2P State:', pc.connectionState);
       if (pc.connectionState === 'connected') {
         updateBadge('Connected', 'bg-emerald-400');
         if (elements.transferSection) elements.transferSection.classList.remove('hidden');
@@ -298,12 +292,10 @@ document.addEventListener('DOMContentLoaded', () => {
     state.dataChannel.binaryType = 'arraybuffer';
 
     state.dataChannel.onopen = () => {
-      console.log('DataChannel OPEN');
       if (elements.transferSection) elements.transferSection.classList.remove('hidden');
     };
 
     state.dataChannel.onclose = () => {
-      console.log('DataChannel CLOSED');
       if (elements.transferSection) elements.transferSection.classList.add('hidden');
     };
 
@@ -381,6 +373,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }, 5000);
     });
 
+    if (state.transferCancelled) {
+      resetTransferUI('Transfer was cancelled');
+      return;
+    }
+
     if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
 
     const arrayBuffer = await file.arrayBuffer();
@@ -391,10 +388,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const sendChunks = () => {
         while (offset < file.size) {
           if (state.transferCancelled) {
-            state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
-            resetTransferUI('Sending cancelled');
-            showToast(`Cancelled sending ${file.name}`, 'info');
             state.isTransferring = false;
+            if (state.dataChannel) {
+              state.dataChannel.onbufferedamountlow = null;
+            }
+            resetTransferUI('Transfer was cancelled');
             resolve();
             return;
           }
@@ -414,10 +412,12 @@ document.addEventListener('DOMContentLoaded', () => {
           updateTransferMetrics(offset, file.size);
         }
 
-        if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
-        showToast(`Sent ${file.name} successfully`, 'success');
-        state.isTransferring = false;
-        setTimeout(() => resetTransferUI(), 3000);
+        if (!state.transferCancelled) {
+          if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
+          showToast(`Sent ${file.name} successfully`, 'success');
+          state.isTransferring = false;
+          setTimeout(() => resetTransferUI(), 3000);
+        }
         resolve();
       };
 
@@ -480,16 +480,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (parsed.type === 'cancel') {
-          if (state.writableStream) {
-            await state.writableStream.abort();
-          }
-          state.incomingFileInfo = null;
-          state.receivedChunks = [];
-          state.writableStream = null;
-          state.fileHandle = null;
+          state.transferCancelled = true;
           state.isTransferring = false;
-          resetTransferUI('Peer cancelled transfer');
-          showToast('Sender cancelled transfer', 'error');
+          state.incomingFileInfo = null; // Clear info so UI resets and disappears
+
+          if (state.dataChannel) {
+            state.dataChannel.onbufferedamountlow = null;
+          }
+          if (state.writableStream) {
+            await state.writableStream.abort().catch(() => {});
+            state.writableStream = null;
+          }
+
+          state.receivedChunks = [];
+          state.fileHandle = null;
+
+          resetTransferUI('Transfer was cancelled');
+          showToast('Transfer was cancelled', 'error');
           return;
         }
       } catch (err) {
@@ -592,11 +599,27 @@ document.addEventListener('DOMContentLoaded', () => {
   if (elements.btnCancelTransfer) {
     elements.btnCancelTransfer.addEventListener('click', () => {
       state.transferCancelled = true;
+      state.isTransferring = false;
+      state.incomingFileInfo = null;
+
       if (state.dataChannel && state.dataChannel.readyState === 'open') {
-        state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
+        try {
+          state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
+        } catch (e) {
+          console.warn('Failed to send cancel signal:', e);
+        }
       }
-      resetTransferUI('Cancelled');
-      showToast('Transfer cancelled', 'info');
+
+      if (state.writableStream) {
+        state.writableStream.abort().catch(() => {});
+        state.writableStream = null;
+      }
+
+      state.receivedChunks = [];
+      state.fileHandle = null;
+
+      resetTransferUI('Transfer was cancelled');
+      showToast('Transfer was cancelled', 'error');
     });
   }
 
@@ -775,7 +798,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
-  
+
   // Initialize
   initRoom();
   initSocket();
