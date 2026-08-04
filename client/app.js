@@ -464,7 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
     state.lastMetricTime = Date.now();
     state.lastMetricBytes = 0;
 
-    // STEP 3 UI: Direction Setup
+    // UI Direction Setup
     if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'You (Sending)';
     if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
 
@@ -494,8 +494,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }, 30000); // 30s confirmation window
     });
 
+    // --- FIX: Reset transfer state on decline/cancel ---
     if (!accepted || state.transferCancelled) {
-      resetTransferUI('Transfer declined or timed out');
+      state.isTransferring = false; // Reset transfer state flag
+      
+      const declineMsg = state.transferCancelled ? 'Transfer cancelled' : 'Transfer declined by peer';
+      
+      resetTransferUI(declineMsg);
+      showToast(declineMsg, 'error');
       playAudioFeedback('cancel');
       triggerHaptic([150, 50, 150]);
       clearStagedFile();
