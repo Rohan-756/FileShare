@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function getOrCreateLocalUser() {
     const STORAGE_KEY = 'p2p_user_profile';
     const savedUser = localStorage.getItem(STORAGE_KEY);
-    
+
     if (savedUser) {
       try {
         return JSON.parse(savedUser);
@@ -49,7 +49,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Receiver Batch State
     incomingBatch: [], // List of { fileId, name, size, mimeType, accepted: true|false }
-    batchResponseResolver: null,
 
     // Active File Stream state
     incomingFileInfo: null,
@@ -114,6 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return `ETA: ${mins}m ${secs}s`;
   }
 
+  // Phase 3: Sound Synthesizer via Web Audio API
   function playAudioFeedback(type) {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -146,10 +146,11 @@ document.addEventListener('DOMContentLoaded', () => {
         osc.stop(ctx.currentTime + 0.2);
       }
     } catch (e) {
-      console.warn('Audio error:', e);
+      console.warn('Audio feedback error:', e);
     }
   }
 
+  // Phase 3: Browser Haptics Feedback
   function triggerHaptic(pattern = [100, 50, 100]) {
     if ('vibrate' in navigator) {
       navigator.vibrate(pattern);
@@ -345,7 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // RECEIVER BATCH QUEUE RENDERING
+  // RECEIVER BATCH QUEUE RENDERING WITH DIRECT ACCEPT/DECLINE BUTTONS
   function renderReceiverBatchQueue() {
     if (!elements.receiverQueueContainer || !elements.receiverFileList) return;
 
@@ -368,28 +369,49 @@ document.addEventListener('DOMContentLoaded', () => {
 
       card.innerHTML = `
         <div class="flex items-center gap-3 min-w-0 flex-1">
-          <input type="checkbox" data-file-id="${item.fileId}" ${item.accepted ? 'checked' : ''} class="h-4 w-4 rounded border-slate-600 bg-slate-900 text-indigo-600 focus:ring-indigo-500 cursor-pointer"/>
           <div class="flex flex-col min-w-0">
             <p class="text-xs font-bold text-slate-100 truncate">${item.name}</p>
             <p class="text-[11px] font-mono text-slate-400">${formatBytes(item.size)}</p>
           </div>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          <span class="text-xs font-semibold ${item.accepted ? 'text-emerald-400' : 'text-slate-500'}">
-            ${item.accepted ? 'Will Accept' : 'Declined'}
-          </span>
+          <button data-accept-id="${item.fileId}" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            item.accepted 
+              ? 'bg-emerald-600 text-white shadow-md' 
+              : 'bg-slate-700/60 text-slate-400 hover:bg-emerald-600/30 hover:text-emerald-300'
+          }">
+            Accept
+          </button>
+          <button data-decline-id="${item.fileId}" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            !item.accepted 
+              ? 'bg-rose-600 text-white shadow-md' 
+              : 'bg-slate-700/60 text-slate-400 hover:bg-rose-600/30 hover:text-rose-300'
+          }">
+            Decline
+          </button>
         </div>
       `;
 
       elements.receiverFileList.appendChild(card);
     });
 
-    elements.receiverFileList.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
-      checkbox.addEventListener('change', (e) => {
-        const fileId = e.target.getAttribute('data-file-id');
+    elements.receiverFileList.querySelectorAll('[data-accept-id]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const fileId = e.currentTarget.getAttribute('data-accept-id');
         const item = state.incomingBatch.find((i) => i.fileId === fileId);
         if (item) {
-          item.accepted = e.target.checked;
+          item.accepted = true;
+          renderReceiverBatchQueue();
+        }
+      });
+    });
+
+    elements.receiverFileList.querySelectorAll('[data-decline-id]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const fileId = e.currentTarget.getAttribute('data-decline-id');
+        const item = state.incomingBatch.find((i) => i.fileId === fileId);
+        if (item) {
+          item.accepted = false;
           renderReceiverBatchQueue();
         }
       });
@@ -579,7 +601,6 @@ document.addEventListener('DOMContentLoaded', () => {
     state.isTransferring = true;
     state.transferCancelled = false;
 
-    // Build batch payload
     const batchPayload = filesToSend.map((file) => ({
       fileId: 'file_' + Math.random().toString(36).substring(2, 9),
       name: file.name,
@@ -591,7 +612,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
     if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver to accept files...';
 
-    // Send single batch metadata offer
     state.dataChannel.send(
       JSON.stringify({
         type: 'batch-offer',
@@ -599,7 +619,6 @@ document.addEventListener('DOMContentLoaded', () => {
       })
     );
 
-    // Await batch response mapping
     const batchDecisions = await new Promise((resolve) => {
       state.batchDecisionResolver = resolve;
       setTimeout(() => {
@@ -620,7 +639,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const successfulIndices = [];
 
-    // Filter files receiver agreed to accept
     const acceptedFilesToStream = filesToSend.filter((file, idx) => {
       const meta = batchPayload[idx];
       return batchDecisions[meta.fileId] === true;
@@ -634,7 +652,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Stream accepted files back-to-back
     for (let i = 0; i < acceptedFilesToStream.length; i++) {
       const file = acceptedFilesToStream[i];
       const originalIdx = filesToSend.indexOf(file);
@@ -646,7 +663,6 @@ document.addEventListener('DOMContentLoaded', () => {
       successfulIndices.push(indicesToRemove[originalIdx]);
     }
 
-    // Remove successfully sent files from sender staging
     if (successfulIndices.length > 0) {
       state.stagedFiles = state.stagedFiles.filter((_, idx) => !successfulIndices.includes(idx));
       renderStagingQueue();
@@ -669,7 +685,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (elements.transferFilename) elements.transferFilename.textContent = label;
     if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
 
-    // Signal start of file stream
     state.dataChannel.send(
       JSON.stringify({
         type: 'start-file-stream',
@@ -732,7 +747,6 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const parsed = JSON.parse(data);
 
-        // Batch offer received: Render full list immediately
         if (parsed.type === 'batch-offer') {
           state.incomingBatch = parsed.files.map((f) => ({
             ...f,
@@ -745,7 +759,6 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        // Sender receives decision array from receiver
         if (parsed.type === 'batch-response') {
           if (state.batchDecisionResolver) {
             state.batchDecisionResolver(parsed.decisions);
@@ -754,7 +767,6 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        // File stream header
         if (parsed.type === 'start-file-stream') {
           state.incomingFileInfo = parsed;
           state.isTransferring = true;
@@ -777,7 +789,7 @@ document.addEventListener('DOMContentLoaded', () => {
               state.fileHandle = await window.showSaveFilePicker({ suggestedName: parsed.name });
               state.writableStream = await state.fileHandle.createWritable();
             } catch (e) {
-              // Fallback to memory
+              // Fallback
             }
           }
 
@@ -807,7 +819,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Binary file chunk streaming
     if ((data instanceof ArrayBuffer || ArrayBuffer.isView(data)) && state.incomingFileInfo) {
       if (state.transferCancelled) return;
 
@@ -852,6 +863,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Phase 3: Metrics & Browser Tab Title Update
   function updateTransferMetrics(currentBytes, totalBytes) {
     if (!totalBytes || totalBytes === 0) return;
 
@@ -859,6 +871,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (elements.progressBar) elements.progressBar.style.width = `${percent}%`;
     if (elements.transferPercentage) elements.transferPercentage.textContent = `${percent}%`;
 
+    // Tab title update
     document.title = `(${percent}%) FileShare`;
 
     const now = Date.now();
@@ -961,7 +974,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Socket setup
+  // Socket Setup
   function initSocket() {
     if (typeof io === 'undefined') return;
 
@@ -1040,7 +1053,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Dropzone setup
+  // Dropzone Setup
   if (elements.dropzone && elements.fileInput) {
     elements.dropzone.addEventListener('click', (e) => {
       if (e.target.closest('#staging-container')) return;

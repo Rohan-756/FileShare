@@ -35,7 +35,7 @@
         }
 
         .animate-stream {
-            animation: streamPulse 1.5s infinite ease-in-out;
+            animation: streamPulse 1.2s infinite ease-in-out;
         }
 
         .custom-scrollbar::-webkit-scrollbar {
@@ -57,7 +57,6 @@
 
 <body class="relative min-h-screen flex flex-col font-sans antialiased text-slate-100 bg-flowing-mesh overflow-x-hidden">
 
-    <!-- Header -->
     <header class="border-b border-white/10 bg-slate-950/40 backdrop-blur-md sticky top-0 z-50">
         <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
             <div class="flex items-center gap-2.5">
@@ -75,10 +74,8 @@
         </div>
     </header>
 
-    <!-- Main Container -->
     <main class="flex-1 max-w-4xl w-full mx-auto p-4 md:p-6 flex flex-col gap-6 justify-center">
 
-        <!-- Room Card -->
         <section class="bg-white/5 border border-white/10 rounded-2xl p-6 md:p-8 shadow-2xl backdrop-blur-xl">
             <div class="text-center max-w-lg mx-auto mb-8">
                 <h1 class="text-2xl font-bold text-white tracking-tight">Peer-to-Peer Pairing</h1>
@@ -129,13 +126,11 @@
             </div>
         </section>
 
-        <!-- File Transfer Section -->
         <section id="transfer-section" class="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-2xl backdrop-blur-xl hidden">
             <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4 text-center">
                 File Transfer
             </h2>
 
-            <!-- Sender Staging Dropzone -->
             <div id="dropzone" class="border-2 border-dashed border-white/20 hover:border-indigo-400/80 rounded-xl p-8 text-center transition-all cursor-pointer bg-white/5 hover:bg-white/10 backdrop-blur-md">
                 <input type="file" id="file-input" multiple class="hidden" />
                 <div id="dropzone-default" class="flex flex-col items-center gap-2">
@@ -146,7 +141,6 @@
                     <p class="text-xs text-slate-400">Supports single or batch file selection</p>
                 </div>
 
-                <!-- SENDER BATCH STAGING QUEUE -->
                 <div id="staging-container" class="hidden flex flex-col w-full text-left">
                     <div class="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
                         <span id="staging-count" class="text-xs font-bold text-indigo-300 uppercase tracking-wider">Staged Files (0)</span>
@@ -173,7 +167,6 @@
                 </div>
             </div>
 
-            <!-- RECEIVER INCOMING BATCH QUEUE UI -->
             <div id="receiver-queue-container" class="hidden mt-6 p-5 rounded-2xl bg-slate-900/90 border border-indigo-500/30 shadow-2xl backdrop-blur-xl flex flex-col gap-4">
                 <div class="flex items-center justify-between border-b border-white/10 pb-3">
                     <div>
@@ -193,35 +186,37 @@
                     </div>
                 </div>
 
-                <!-- Scrollable Receiver Batch List -->
                 <div id="receiver-file-list" class="max-h-56 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar"></div>
             </div>
 
-            <!-- Transfer Progress Bar Card -->
-            <div id="progress-container" class="hidden mt-6 p-4 rounded-xl bg-white/5 border border-white/10 shadow-inner backdrop-blur-md">
-                <div id="transfer-direction-bar" class="mb-3 p-2 bg-slate-900/60 border border-indigo-500/20 rounded-lg flex items-center justify-between text-xs text-indigo-300">
-                    <span id="transfer-sender-label" class="font-medium">You</span>
-                    <div class="flex-1 mx-3 h-0.5 bg-indigo-500/30 relative flex items-center justify-center">
-                        <div class="w-full h-full bg-gradient-to-r from-indigo-500 via-sky-400 to-indigo-500 animate-stream"></div>
+            <div id="progress-container" class="hidden mt-6 p-5 rounded-2xl bg-slate-900/90 border border-indigo-500/30 shadow-2xl backdrop-blur-xl">
+                <div id="transfer-direction-bar" class="mb-4 p-3 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between text-xs font-bold">
+                    <span id="transfer-sender-label" class="text-indigo-400 flex items-center gap-1.5">
+                        <span class="h-2 w-2 rounded-full bg-indigo-500"></span> You
+                    </span>
+                    <div class="flex-1 mx-4 h-1 bg-slate-800 rounded-full relative overflow-hidden">
+                        <div class="w-full h-full bg-gradient-to-r from-indigo-500 via-sky-400 to-indigo-500 animate-stream rounded-full"></div>
                     </div>
-                    <span id="transfer-receiver-label" class="font-medium">Peer</span>
+                    <span id="transfer-receiver-label" class="text-emerald-400 flex items-center gap-1.5">
+                        Peer <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
+                    </span>
                 </div>
 
                 <div class="flex items-center justify-between mb-2">
                     <div class="flex flex-col min-w-0 pr-2">
-                        <span id="transfer-filename" class="text-sm font-semibold text-slate-200 truncate">filename.ext</span>
+                        <span id="transfer-filename" class="text-sm font-bold text-slate-100 truncate">filename.ext</span>
                         <span id="transfer-status" class="text-xs text-indigo-400 font-medium mt-0.5">Initializing...</span>
                     </div>
                     <div class="flex items-center gap-3 shrink-0">
-                        <span id="transfer-percentage" class="text-xs font-bold text-slate-300">0%</span>
-                        <button id="btn-cancel-transfer" class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30">
+                        <span id="transfer-percentage" class="text-sm font-extrabold text-indigo-300 font-mono">0%</span>
+                        <button id="btn-cancel-transfer" class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 transition-colors">
                             Cancel
                         </button>
                     </div>
                 </div>
 
-                <div class="w-full bg-white/10 rounded-full h-2 overflow-hidden mb-2">
-                    <div id="progress-bar" class="bg-indigo-500 h-2 rounded-full transition-all duration-150" style="width: 0%"></div>
+                <div class="w-full bg-slate-950/80 rounded-full h-2.5 overflow-hidden border border-slate-800 mb-2">
+                    <div id="progress-bar" class="bg-gradient-to-r from-indigo-500 to-sky-400 h-2.5 rounded-full transition-all duration-150" style="width: 0%"></div>
                 </div>
 
                 <div class="flex justify-between items-center text-[11px] text-slate-400 font-mono">
@@ -231,7 +226,6 @@
             </div>
         </section>
 
-        <!-- Room Participants -->
         <section class="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-2xl backdrop-blur-xl">
             <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4 text-center">
                 Transfer Room Participants
@@ -245,7 +239,6 @@
 
     </main>
 
-    <!-- Footer -->
     <footer class="border-t border-white/10 py-4 text-center text-xs text-slate-500 backdrop-blur-md">
         Zero-Trust WebRTC P2P Transfer Engine — E2E Encrypted
     </footer>
