@@ -46,8 +46,15 @@ document.addEventListener('DOMContentLoaded', () => {
     peerConnection: null,
     dataChannel: null,
 
-    // Incoming file state
+    // Step 1: Staging state
+    stagedFile: null,
+
+    // Step 2: Auto-accept state & Modal Resolvers
+    autoAccept: false,
     incomingFileInfo: null,
+    receiverResponseResolver: null,
+
+    // Incoming file assembly state
     receivedChunks: [],
     receivedSize: 0,
     CHUNK_SIZE: 16 * 1024,
@@ -113,6 +120,49 @@ document.addEventListener('DOMContentLoaded', () => {
     return `ETA: ${mins}m ${secs}s`;
   }
 
+  // STEP 3: Audio & Haptic Feedback Helpers
+  function playAudioFeedback(type) {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (type === 'start') {
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.15);
+      } else if (type === 'complete') {
+        osc.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
+        osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1); // E5
+        osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.2); // G5
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.35);
+      } else if (type === 'cancel') {
+        osc.frequency.setValueAtTime(300, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(150, ctx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.2);
+      }
+    } catch (e) {
+      console.warn('Web Audio API disabled or blocked:', e);
+    }
+  }
+
+  function triggerHaptic(pattern = [100, 50, 100]) {
+    if ('vibrate' in navigator) {
+      navigator.vibrate(pattern);
+    }
+  }
+
   function showToast(message, type = 'info') {
     let container = document.getElementById('toast-container');
     if (!container) {
@@ -173,6 +223,29 @@ document.addEventListener('DOMContentLoaded', () => {
     transferSection: getEl('transfer-section'),
     dropzone: getEl('dropzone'),
     fileInput: getEl('file-input'),
+
+    // Step 1: Staging Elements
+    dropzoneDefault: getEl('dropzone-default'),
+    stagingContainer: getEl('staging-container'),
+    stagingPreview: getEl('staging-preview'),
+    stagingFilename: getEl('staging-filename'),
+    stagingFilesize: getEl('staging-filesize'),
+    btnCancelStaging: getEl('btn-cancel-staging'),
+    btnConfirmSend: getEl('btn-confirm-send'),
+
+    // Step 2: Incoming Modal Elements
+    incomingModal: getEl('incoming-modal'),
+    incomingPeerName: getEl('incoming-peer-name'),
+    incomingFileName: getEl('incoming-file-name'),
+    incomingFileSize: getEl('incoming-file-size'),
+    chkAutoAccept: getEl('chk-auto-accept'),
+    btnAcceptTransfer: getEl('btn-accept-transfer'),
+    btnRejectTransfer: getEl('btn-reject-transfer'),
+
+    // Step 3: Direction Indicator Elements
+    transferSenderLabel: getEl('transfer-sender-label'),
+    transferReceiverLabel: getEl('transfer-receiver-label'),
+
     progressContainer: getEl('progress-container'),
     transferFilename: getEl('transfer-filename'),
     transferPercentage: getEl('transfer-percentage'),
@@ -182,6 +255,46 @@ document.addEventListener('DOMContentLoaded', () => {
     transferEta: getEl('transfer-eta'),
     btnCancelTransfer: getEl('btn-cancel-transfer')
   };
+
+  // STEP 1: Staging Logic
+  function stageFile(file) {
+    state.stagedFile = file;
+
+    if (elements.dropzoneDefault) elements.dropzoneDefault.classList.add('hidden');
+    if (elements.stagingContainer) elements.stagingContainer.classList.remove('hidden');
+
+    if (elements.stagingFilename) elements.stagingFilename.textContent = file.name;
+    if (elements.stagingFilesize) elements.stagingFilesize.textContent = formatBytes(file.size);
+
+    if (elements.stagingPreview) {
+      elements.stagingPreview.innerHTML = '';
+
+      if (file.type.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(file);
+        img.className = 'h-full w-full object-cover rounded-xl';
+        img.onload = () => URL.revokeObjectURL(img.src);
+        elements.stagingPreview.appendChild(img);
+      } else {
+        const iconSvg = document.createElement('div');
+        iconSvg.className = 'flex flex-col items-center justify-center text-indigo-400';
+        iconSvg.innerHTML = `
+          <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+          </svg>
+          <span class="text-[10px] font-bold uppercase mt-1 text-slate-300">${file.name.split('.').pop() || 'FILE'}</span>
+        `;
+        elements.stagingPreview.appendChild(iconSvg);
+      }
+    }
+  }
+
+  function clearStagedFile() {
+    state.stagedFile = null;
+    if (elements.fileInput) elements.fileInput.value = '';
+    if (elements.stagingContainer) elements.stagingContainer.classList.add('hidden');
+    if (elements.dropzoneDefault) elements.dropzoneDefault.classList.remove('hidden');
+  }
 
   // 4. Room Management
   function createNewRoom() {
@@ -351,30 +464,41 @@ document.addEventListener('DOMContentLoaded', () => {
     state.lastMetricTime = Date.now();
     state.lastMetricBytes = 0;
 
+    // STEP 3 UI: Direction Setup
+    if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'You (Sending)';
+    if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
+
     if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
     if (elements.transferFilename) elements.transferFilename.textContent = file.name;
-    if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver...';
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver confirmation...';
 
     const metadata = {
       type: 'metadata',
       name: file.name,
       size: file.size,
-      mimeType: file.type
+      mimeType: file.type,
+      senderName: localUser.name
     };
     state.dataChannel.send(JSON.stringify(metadata));
 
-    await new Promise((resolve) => {
+    playAudioFeedback('start');
+
+    // Wait for receiver confirmation response
+    const accepted = await new Promise((resolve) => {
       state.receiverReadyResolver = resolve;
       setTimeout(() => {
         if (state.receiverReadyResolver) {
           state.receiverReadyResolver = null;
-          resolve();
+          resolve(false); // Timeout rejected
         }
-      }, 5000);
+      }, 30000); // 30s confirmation window
     });
 
-    if (state.transferCancelled) {
-      resetTransferUI('Transfer was cancelled');
+    if (!accepted || state.transferCancelled) {
+      resetTransferUI('Transfer declined or timed out');
+      playAudioFeedback('cancel');
+      triggerHaptic([150, 50, 150]);
+      clearStagedFile();
       return;
     }
 
@@ -393,6 +517,9 @@ document.addEventListener('DOMContentLoaded', () => {
               state.dataChannel.onbufferedamountlow = null;
             }
             resetTransferUI('Transfer was cancelled');
+            playAudioFeedback('cancel');
+            triggerHaptic([150, 50, 150]);
+            clearStagedFile();
             resolve();
             return;
           }
@@ -415,13 +542,36 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!state.transferCancelled) {
           if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
           showToast(`Sent ${file.name} successfully`, 'success');
+          playAudioFeedback('complete');
+          triggerHaptic([100, 50, 100, 50, 200]);
           state.isTransferring = false;
+          clearStagedFile();
           setTimeout(() => resetTransferUI(), 3000);
         }
         resolve();
       };
 
       sendChunks();
+    });
+  }
+
+  // STEP 2: Show Incoming Confirmation Modal
+  function promptIncomingTransfer(metadata) {
+    if (state.autoAccept) {
+      return Promise.resolve(true);
+    }
+
+    if (elements.incomingPeerName) elements.incomingPeerName.textContent = `${metadata.senderName || 'Peer'} wants to send a file`;
+    if (elements.incomingFileName) elements.incomingFileName.textContent = metadata.name;
+    if (elements.incomingFileSize) elements.incomingFileSize.textContent = formatBytes(metadata.size);
+
+    if (elements.incomingModal) elements.incomingModal.classList.remove('hidden');
+
+    playAudioFeedback('start');
+    triggerHaptic([200, 100, 200]);
+
+    return new Promise((resolve) => {
+      state.receiverResponseResolver = resolve;
     });
   }
 
@@ -433,17 +583,39 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const parsed = JSON.parse(data);
 
-        if (parsed.type === 'receiver-ready') {
+        // Receiver response handling
+        if (parsed.type === 'receiver-accept') {
           if (state.receiverReadyResolver) {
-            state.receiverReadyResolver();
+            state.receiverReadyResolver(true);
             state.receiverReadyResolver = null;
           }
           return;
         }
 
+        if (parsed.type === 'receiver-reject') {
+          if (state.receiverReadyResolver) {
+            state.receiverReadyResolver(false);
+            state.receiverReadyResolver = null;
+          }
+          return;
+        }
+
+        // STEP 2: Metadata Handshake & Modal Trigger
         if (parsed.type === 'metadata') {
-          state.isTransferring = true;
           state.incomingFileInfo = parsed;
+
+          const userAccepted = await promptIncomingTransfer(parsed);
+
+          if (!userAccepted) {
+            if (state.dataChannel && state.dataChannel.readyState === 'open') {
+              state.dataChannel.send(JSON.stringify({ type: 'receiver-reject' }));
+            }
+            state.incomingFileInfo = null;
+            return;
+          }
+
+          // User accepted transfer
+          state.isTransferring = true;
           state.receivedChunks = [];
           state.receivedSize = 0;
           state.transferStartTime = Date.now();
@@ -452,6 +624,10 @@ document.addEventListener('DOMContentLoaded', () => {
           state.transferCancelled = false;
           state.fileHandle = null;
           state.writableStream = null;
+
+          // STEP 3 UI: Direction Setup
+          if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = `${parsed.senderName || 'Peer'} (Sending)`;
+          if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'You (Receiving)';
 
           if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
           if (elements.transferFilename) elements.transferFilename.textContent = parsed.name;
@@ -472,7 +648,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           if (state.dataChannel && state.dataChannel.readyState === 'open') {
-            state.dataChannel.send(JSON.stringify({ type: 'receiver-ready' }));
+            state.dataChannel.send(JSON.stringify({ type: 'receiver-accept' }));
           }
 
           updateTransferMetrics(0, parsed.size);
@@ -482,7 +658,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (parsed.type === 'cancel') {
           state.transferCancelled = true;
           state.isTransferring = false;
-          state.incomingFileInfo = null; // Clear info so UI resets and disappears
+          state.incomingFileInfo = null;
 
           if (state.dataChannel) {
             state.dataChannel.onbufferedamountlow = null;
@@ -497,6 +673,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
           resetTransferUI('Transfer was cancelled');
           showToast('Transfer was cancelled', 'error');
+          playAudioFeedback('cancel');
+          triggerHaptic([150, 50, 150]);
           return;
         }
       } catch (err) {
@@ -539,6 +717,9 @@ document.addEventListener('DOMContentLoaded', () => {
           showToast(`Downloaded ${state.incomingFileInfo.name}`, 'success');
         }
 
+        playAudioFeedback('complete');
+        triggerHaptic([100, 50, 100, 50, 200]);
+
         state.incomingFileInfo = null;
         state.receivedChunks = [];
         state.writableStream = null;
@@ -557,6 +738,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const percent = Math.min(100, Math.round((currentBytes / totalBytes) * 100));
     if (elements.progressBar) elements.progressBar.style.width = `${percent}%`;
     if (elements.transferPercentage) elements.transferPercentage.textContent = `${percent}%`;
+
+    // Tab percentage update
+    document.title = `(${percent}%) FileShare`;
 
     const now = Date.now();
     const timeDelta = (now - state.lastMetricTime) / 1000;
@@ -581,6 +765,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function resetTransferUI(statusText = '') {
+    document.title = 'FileShare';
+
     if (statusText && elements.transferStatus) {
       elements.transferStatus.textContent = statusText;
     }
@@ -596,6 +782,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2500);
   }
 
+  // Cancel Button Handlers
   if (elements.btnCancelTransfer) {
     elements.btnCancelTransfer.addEventListener('click', () => {
       state.transferCancelled = true;
@@ -620,6 +807,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
       resetTransferUI('Transfer was cancelled');
       showToast('Transfer was cancelled', 'error');
+      playAudioFeedback('cancel');
+      triggerHaptic([150, 50, 150]);
+      clearStagedFile();
+    });
+  }
+
+  // STEP 1 Event Listeners: Staging Controls
+  if (elements.btnCancelStaging) {
+    elements.btnCancelStaging.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearStagedFile();
+    });
+  }
+
+  if (elements.btnConfirmSend) {
+    elements.btnConfirmSend.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (state.stagedFile) {
+        sendFile(state.stagedFile);
+      }
+    });
+  }
+
+  // STEP 2 Event Listeners: Modal Controls
+  if (elements.btnAcceptTransfer) {
+    elements.btnAcceptTransfer.addEventListener('click', () => {
+      if (elements.chkAutoAccept && elements.chkAutoAccept.checked) {
+        state.autoAccept = true;
+      }
+      if (elements.incomingModal) elements.incomingModal.classList.add('hidden');
+      if (state.receiverResponseResolver) {
+        state.receiverResponseResolver(true);
+        state.receiverResponseResolver = null;
+      }
+    });
+  }
+
+  if (elements.btnRejectTransfer) {
+    elements.btnRejectTransfer.addEventListener('click', () => {
+      if (elements.incomingModal) elements.incomingModal.classList.add('hidden');
+      if (state.receiverResponseResolver) {
+        state.receiverResponseResolver(false);
+        state.receiverResponseResolver = null;
+      }
     });
   }
 
@@ -716,13 +947,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Dropzone & File Listeners
+  // Dropzone & File Selection Listeners
   if (elements.dropzone && elements.fileInput) {
-    elements.dropzone.addEventListener('click', () => elements.fileInput.click());
+    elements.dropzone.addEventListener('click', (e) => {
+      // Don't trigger file dialog if clicking staging buttons
+      if (e.target.closest('#staging-container')) return;
+      elements.fileInput.click();
+    });
 
     elements.fileInput.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {
-        sendFile(e.target.files[0]);
+        stageFile(e.target.files[0]);
       }
     });
 
@@ -739,7 +974,7 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
       if (e.dataTransfer.files.length > 0) {
-        sendFile(e.dataTransfer.files[0]);
+        stageFile(e.dataTransfer.files[0]);
       }
     });
   }
