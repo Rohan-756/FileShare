@@ -676,6 +676,14 @@ document.addEventListener('DOMContentLoaded', () => {
     state.isTransferring = false;
   }
 
+  // SHA-256 Helper Function
+  async function computeSHA256(arrayBuffer) {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Inside streamSingleFile (Sender side):
   async function streamSingleFile(file, metadata, fileIndex, totalFiles) {
     if (state.transferCancelled) return false;
 
@@ -688,6 +696,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const label = totalFiles > 1 ? `[${fileIndex}/${totalFiles}] ${file.name}` : file.name;
     if (elements.transferFilename) elements.transferFilename.textContent = label;
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Computing SHA-256 hash...';
+
+    const arrayBuffer = await file.arrayBuffer();
+    const checksum = await computeSHA256(arrayBuffer);
+
     if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
 
     state.dataChannel.send(
@@ -696,13 +709,13 @@ document.addEventListener('DOMContentLoaded', () => {
         fileId: metadata.fileId,
         name: metadata.name,
         size: metadata.size,
-        mimeType: metadata.mimeType
+        mimeType: metadata.mimeType,
+        checksum: checksum
       })
     );
 
     playAudioFeedback('start');
 
-    const arrayBuffer = await file.arrayBuffer();
     let offset = 0;
     state.dataChannel.bufferedAmountLowThreshold = 65536;
 
@@ -838,26 +851,125 @@ document.addEventListener('DOMContentLoaded', () => {
 
       updateTransferMetrics(state.receivedSize, state.incomingFileInfo.size);
 
+      // SHA-256 Helper Function
+  async function computeSHA256(arrayBuffer) {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Inside streamSingleFile (Sender side):
+  async function streamSingleFile(file, metadata, fileIndex, totalFiles) {
+    if (state.transferCancelled) return false;
+
+    state.transferStartTime = Date.now();
+    state.lastMetricTime = Date.now();
+    state.lastMetricBytes = 0;
+
+    if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'You (Sending)';
+    if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
+
+    const label = totalFiles > 1 ? `[${fileIndex}/${totalFiles}] ${file.name}` : file.name;
+    if (elements.transferFilename) elements.transferFilename.textContent = label;
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Computing SHA-256 hash...';
+
+    const arrayBuffer = await file.arrayBuffer();
+    const checksum = await computeSHA256(arrayBuffer);
+
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
+
+    state.dataChannel.send(
+      JSON.stringify({
+        type: 'start-file-stream',
+        fileId: metadata.fileId,
+        name: metadata.name,
+        size: metadata.size,
+        mimeType: metadata.mimeType,
+        checksum: checksum
+      })
+    );
+
+    playAudioFeedback('start');
+
+    let offset = 0;
+    state.dataChannel.bufferedAmountLowThreshold = 65536;
+
+    return new Promise((resolve) => {
+      const sendChunks = () => {
+        while (offset < file.size) {
+          if (state.transferCancelled) {
+            if (state.dataChannel) state.dataChannel.onbufferedamountlow = null;
+            resetTransferUI('Transfer cancelled');
+            playAudioFeedback('cancel');
+            resolve(false);
+            return;
+          }
+
+          if (state.dataChannel.bufferedAmount > state.dataChannel.bufferedAmountLowThreshold) {
+            state.dataChannel.onbufferedamountlow = () => {
+              state.dataChannel.onbufferedamountlow = null;
+              sendChunks();
+            };
+            return;
+          }
+
+          const chunk = arrayBuffer.slice(offset, offset + state.CHUNK_SIZE);
+          state.dataChannel.send(chunk);
+          offset += chunk.byteLength;
+
+          updateTransferMetrics(offset, file.size);
+        }
+
+        if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
+        showToast(`Sent ${file.name}`, 'success');
+        playAudioFeedback('complete');
+        triggerHaptic([100, 50, 100]);
+        setTimeout(() => resetTransferUI(), 1500);
+        resolve(true);
+      };
+
+      sendChunks();
+    });
+  }
+
+  // Inside handleIncomingData (Receiver side completion logic):
+  // Replace the stream completion block inside handleIncomingData with this:
       if (state.receivedSize >= state.incomingFileInfo.size) {
+        if (elements.transferStatus) elements.transferStatus.textContent = 'Verifying SHA-256 checksum...';
+
+        let receivedBuffer;
         if (state.writableStream) {
           await state.writableStream.close();
           state.writableStream = null;
-          showToast(`Saved to disk: ${state.incomingFileInfo.name}`, 'success');
+          // For File System Access API, read back or rely on chunk buffer
+          receivedBuffer = await (await state.fileHandle.getFile()).arrayBuffer();
         } else {
-          const blob = new Blob(state.receivedChunks, {
-            type: state.incomingFileInfo.mimeType || 'application/octet-stream'
-          });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = state.incomingFileInfo.name;
-          a.click();
-          URL.revokeObjectURL(url);
-          showToast(`Downloaded ${state.incomingFileInfo.name}`, 'success');
+          const blob = new Blob(state.receivedChunks);
+          receivedBuffer = await blob.arrayBuffer();
         }
 
-        playAudioFeedback('complete');
-        triggerHaptic([100, 50, 100]);
+        const calculatedChecksum = await computeSHA256(receivedBuffer);
+        const expectedChecksum = state.incomingFileInfo.checksum;
+
+        if (expectedChecksum && calculatedChecksum !== expectedChecksum) {
+          showToast(`Integrity Check Failed: ${state.incomingFileInfo.name} (Bit-rot detected!)`, 'error');
+          playAudioFeedback('cancel');
+        } else {
+          if (!state.fileHandle) {
+            const blob = new Blob([receivedBuffer], {
+              type: state.incomingFileInfo.mimeType || 'application/octet-stream'
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = state.incomingFileInfo.name;
+            a.click();
+            URL.revokeObjectURL(url);
+          }
+          showToast(`Verified & Saved: ${state.incomingFileInfo.name}`, 'success');
+          playAudioFeedback('complete');
+          triggerHaptic([100, 50, 100]);
+        }
 
         state.incomingFileInfo = null;
         state.receivedChunks = [];
