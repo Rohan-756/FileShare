@@ -46,8 +46,8 @@ document.addEventListener('DOMContentLoaded', () => {
     peerConnection: null,
     dataChannel: null,
 
-    // Step 1: Staging state
-    stagedFile: null,
+    // Step 1: Batch Staging Queue State
+    stagedFiles: [],
 
     // Step 2: Auto-accept state & Modal Resolvers
     autoAccept: false,
@@ -120,7 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return `ETA: ${mins}m ${secs}s`;
   }
 
-  // STEP 3: Audio & Haptic Feedback Helpers
+  // Audio & Haptic Feedback Helpers
   function playAudioFeedback(type) {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -137,9 +137,9 @@ document.addEventListener('DOMContentLoaded', () => {
         osc.start();
         osc.stop(ctx.currentTime + 0.15);
       } else if (type === 'complete') {
-        osc.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
-        osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1); // E5
-        osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.2); // G5
+        osc.frequency.setValueAtTime(523.25, ctx.currentTime);
+        osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1);
+        osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.2);
         gain.gain.setValueAtTime(0.15, ctx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
         osc.start();
@@ -224,16 +224,16 @@ document.addEventListener('DOMContentLoaded', () => {
     dropzone: getEl('dropzone'),
     fileInput: getEl('file-input'),
 
-    // Step 1: Staging Elements
+    // Batch Staging Queue Elements
     dropzoneDefault: getEl('dropzone-default'),
     stagingContainer: getEl('staging-container'),
-    stagingPreview: getEl('staging-preview'),
-    stagingFilename: getEl('staging-filename'),
-    stagingFilesize: getEl('staging-filesize'),
-    btnCancelStaging: getEl('btn-cancel-staging'),
-    btnConfirmSend: getEl('btn-confirm-send'),
+    stagingQueueList: getEl('staging-queue-list'),
+    stagingCount: getEl('staging-count'),
+    btnAddMore: getEl('btn-add-more'),
+    btnClearAllStaging: getEl('btn-clear-all-staging'),
+    btnConfirmSendAll: getEl('btn-confirm-send-all'),
 
-    // Step 2: Incoming Modal Elements
+    // Incoming Modal Elements
     incomingModal: getEl('incoming-modal'),
     incomingPeerName: getEl('incoming-peer-name'),
     incomingFileName: getEl('incoming-file-name'),
@@ -242,7 +242,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnAcceptTransfer: getEl('btn-accept-transfer'),
     btnRejectTransfer: getEl('btn-reject-transfer'),
 
-    // Step 3: Direction Indicator Elements
+    // Transfer Direction Indicators
     transferSenderLabel: getEl('transfer-sender-label'),
     transferReceiverLabel: getEl('transfer-receiver-label'),
 
@@ -256,44 +256,111 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCancelTransfer: getEl('btn-cancel-transfer')
   };
 
-  // STEP 1: Staging Logic
-  function stageFile(file) {
-    state.stagedFile = file;
-
-    if (elements.dropzoneDefault) elements.dropzoneDefault.classList.add('hidden');
-    if (elements.stagingContainer) elements.stagingContainer.classList.remove('hidden');
-
-    if (elements.stagingFilename) elements.stagingFilename.textContent = file.name;
-    if (elements.stagingFilesize) elements.stagingFilesize.textContent = formatBytes(file.size);
-
-    if (elements.stagingPreview) {
-      elements.stagingPreview.innerHTML = '';
-
-      if (file.type.startsWith('image/')) {
-        const img = document.createElement('img');
-        img.src = URL.createObjectURL(file);
-        img.className = 'h-full w-full object-cover rounded-xl';
-        img.onload = () => URL.revokeObjectURL(img.src);
-        elements.stagingPreview.appendChild(img);
-      } else {
-        const iconSvg = document.createElement('div');
-        iconSvg.className = 'flex flex-col items-center justify-center text-indigo-400';
-        iconSvg.innerHTML = `
-          <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
-          </svg>
-          <span class="text-[10px] font-bold uppercase mt-1 text-slate-300">${file.name.split('.').pop() || 'FILE'}</span>
-        `;
-        elements.stagingPreview.appendChild(iconSvg);
+  // STEP 1: Batch Staging Queue Logic
+  function addFilesToStaging(fileList) {
+    const newFiles = Array.from(fileList);
+    
+    // Prevent duplicate entries by comparing name + size + lastModified
+    newFiles.forEach((file) => {
+      const exists = state.stagedFiles.some(
+        (f) => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified
+      );
+      if (!exists) {
+        state.stagedFiles.push(file);
       }
-    }
+    });
+
+    renderStagingQueue();
   }
 
-  function clearStagedFile() {
-    state.stagedFile = null;
+  function removeFileFromStaging(index) {
+    state.stagedFiles.splice(index, 1);
+    renderStagingQueue();
+  }
+
+  function clearStagedFiles() {
+    state.stagedFiles = [];
     if (elements.fileInput) elements.fileInput.value = '';
-    if (elements.stagingContainer) elements.stagingContainer.classList.add('hidden');
-    if (elements.dropzoneDefault) elements.dropzoneDefault.classList.remove('hidden');
+    renderStagingQueue();
+  }
+
+  function renderStagingQueue() {
+    if (!elements.stagingContainer || !elements.dropzoneDefault) return;
+
+    if (state.stagedFiles.length === 0) {
+      elements.stagingContainer.classList.add('hidden');
+      elements.dropzoneDefault.classList.remove('hidden');
+      return;
+    }
+
+    elements.dropzoneDefault.classList.add('hidden');
+    elements.stagingContainer.classList.remove('hidden');
+
+    if (elements.stagingCount) {
+      elements.stagingCount.textContent = `Staged Files (${state.stagedFiles.length})`;
+    }
+
+    if (!elements.stagingQueueList) return;
+    elements.stagingQueueList.innerHTML = '';
+
+    state.stagedFiles.forEach((file, index) => {
+      const card = document.createElement('div');
+      card.className = 'flex items-center justify-between p-2.5 rounded-xl bg-slate-900/80 border border-slate-700/60 backdrop-blur-md gap-3';
+
+      const fileExt = file.name.split('.').pop() || 'FILE';
+      const isImg = file.type.startsWith('image/');
+
+      let previewHtml = '';
+      if (isImg) {
+        const objectUrl = URL.createObjectURL(file);
+        previewHtml = `<img src="${objectUrl}" class="h-10 w-10 object-cover rounded-lg shrink-0 border border-slate-700" onload="URL.revokeObjectURL('${objectUrl}')"/>`;
+      } else {
+        previewHtml = `
+          <div class="h-10 w-10 rounded-lg bg-indigo-500/10 border border-indigo-500/30 shrink-0 flex flex-col items-center justify-center text-indigo-300">
+            <span class="text-[9px] font-bold uppercase tracking-wider">${fileExt.substring(0, 4)}</span>
+          </div>
+        `;
+      }
+
+      card.innerHTML = `
+        <div class="flex items-center gap-3 min-w-0 flex-1">
+          ${previewHtml}
+          <div class="flex flex-col min-w-0 pr-2">
+            <p class="text-xs font-bold text-slate-100 truncate">${file.name}</p>
+            <p class="text-[11px] font-mono text-slate-400">${formatBytes(file.size)}</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <button data-send-idx="${index}" class="px-2.5 py-1.5 bg-indigo-600/80 hover:bg-indigo-500 text-white text-[11px] font-semibold rounded-lg shadow transition-all active:scale-95">
+            Send
+          </button>
+          <button data-remove-idx="${index}" class="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 rounded-lg transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+      `;
+
+      elements.stagingQueueList.appendChild(card);
+    });
+
+    // Attach item action handlers
+    elements.stagingQueueList.querySelectorAll('[data-send-idx]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.getAttribute('data-send-idx'), 10);
+        sendBatchFiles([state.stagedFiles[idx]], [idx]);
+      });
+    });
+
+    elements.stagingQueueList.querySelectorAll('[data-remove-idx]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.getAttribute('data-remove-idx'), 10);
+        removeFileFromStaging(idx);
+      });
+    });
   }
 
   // 4. Room Management
@@ -451,13 +518,35 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 6. File Sender Engine
-  async function sendFile(file) {
+  // 6. Batch Transfer Engine
+  async function sendBatchFiles(filesToSend, indicesToRemove = []) {
     if (!state.dataChannel || state.dataChannel.readyState !== 'open') {
       showToast('Peer connection is not open!', 'error');
       return;
     }
 
+    if (state.isTransferring) {
+      showToast('A transfer is already in progress', 'error');
+      return;
+    }
+
+    for (let i = 0; i < filesToSend.length; i++) {
+      const file = filesToSend[i];
+      const success = await sendFile(file, i + 1, filesToSend.length);
+      
+      if (!success || state.transferCancelled) {
+        break; // Stop remaining queue on cancel or decline
+      }
+    }
+
+    // Clean up successfully sent files from staging queue
+    if (indicesToRemove.length > 0) {
+      state.stagedFiles = state.stagedFiles.filter((_, idx) => !indicesToRemove.includes(idx));
+      renderStagingQueue();
+    }
+  }
+
+  async function sendFile(file, queueIndex = 1, queueTotal = 1) {
     state.isTransferring = true;
     state.transferCancelled = false;
     state.transferStartTime = Date.now();
@@ -469,7 +558,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
 
     if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
-    if (elements.transferFilename) elements.transferFilename.textContent = file.name;
+    
+    const fileLabel = queueTotal > 1 ? `[${queueIndex}/${queueTotal}] ${file.name}` : file.name;
+    if (elements.transferFilename) elements.transferFilename.textContent = fileLabel;
     if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver confirmation...';
 
     const metadata = {
@@ -489,23 +580,19 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => {
         if (state.receiverReadyResolver) {
           state.receiverReadyResolver = null;
-          resolve(false); // Timeout rejected
+          resolve(false);
         }
-      }, 30000); // 30s confirmation window
+      }, 30000);
     });
 
-    // --- FIX: Reset transfer state on decline/cancel ---
     if (!accepted || state.transferCancelled) {
-      state.isTransferring = false; // Reset transfer state flag
-      
+      state.isTransferring = false;
       const declineMsg = state.transferCancelled ? 'Transfer cancelled' : 'Transfer declined by peer';
-      
       resetTransferUI(declineMsg);
       showToast(declineMsg, 'error');
       playAudioFeedback('cancel');
       triggerHaptic([150, 50, 150]);
-      clearStagedFile();
-      return;
+      return false;
     }
 
     if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
@@ -525,8 +612,7 @@ document.addEventListener('DOMContentLoaded', () => {
             resetTransferUI('Transfer was cancelled');
             playAudioFeedback('cancel');
             triggerHaptic([150, 50, 150]);
-            clearStagedFile();
-            resolve();
+            resolve(false);
             return;
           }
 
@@ -551,17 +637,16 @@ document.addEventListener('DOMContentLoaded', () => {
           playAudioFeedback('complete');
           triggerHaptic([100, 50, 100, 50, 200]);
           state.isTransferring = false;
-          clearStagedFile();
-          setTimeout(() => resetTransferUI(), 3000);
+          setTimeout(() => resetTransferUI(), 2500);
         }
-        resolve();
+        resolve(true);
       };
 
       sendChunks();
     });
   }
 
-  // STEP 2: Show Incoming Confirmation Modal
+  // STEP 2: Receiver Confirmation Modal Logic
   function promptIncomingTransfer(metadata) {
     if (state.autoAccept) {
       return Promise.resolve(true);
@@ -606,7 +691,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        // STEP 2: Metadata Handshake & Modal Trigger
+        // Metadata Handshake
         if (parsed.type === 'metadata') {
           state.incomingFileInfo = parsed;
 
@@ -631,7 +716,7 @@ document.addEventListener('DOMContentLoaded', () => {
           state.fileHandle = null;
           state.writableStream = null;
 
-          // STEP 3 UI: Direction Setup
+          // UI Direction Setup
           if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = `${parsed.senderName || 'Peer'} (Sending)`;
           if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'You (Receiving)';
 
@@ -732,7 +817,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.fileHandle = null;
         state.isTransferring = false;
 
-        setTimeout(() => resetTransferUI(), 3000);
+        setTimeout(() => resetTransferUI(), 2500);
       }
     }
   }
@@ -745,7 +830,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (elements.progressBar) elements.progressBar.style.width = `${percent}%`;
     if (elements.transferPercentage) elements.transferPercentage.textContent = `${percent}%`;
 
-    // Tab percentage update
     document.title = `(${percent}%) FileShare`;
 
     const now = Date.now();
@@ -788,7 +872,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2500);
   }
 
-  // Cancel Button Handlers
+  // Event Listeners: Cancel Button
   if (elements.btnCancelTransfer) {
     elements.btnCancelTransfer.addEventListener('click', () => {
       state.transferCancelled = true;
@@ -815,28 +899,35 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('Transfer was cancelled', 'error');
       playAudioFeedback('cancel');
       triggerHaptic([150, 50, 150]);
-      clearStagedFile();
     });
   }
 
-  // STEP 1 Event Listeners: Staging Controls
-  if (elements.btnCancelStaging) {
-    elements.btnCancelStaging.addEventListener('click', (e) => {
+  // Event Listeners: Staging Queue Controls
+  if (elements.btnAddMore && elements.fileInput) {
+    elements.btnAddMore.addEventListener('click', (e) => {
       e.stopPropagation();
-      clearStagedFile();
+      elements.fileInput.click();
     });
   }
 
-  if (elements.btnConfirmSend) {
-    elements.btnConfirmSend.addEventListener('click', (e) => {
+  if (elements.btnClearAllStaging) {
+    elements.btnClearAllStaging.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (state.stagedFile) {
-        sendFile(state.stagedFile);
+      clearStagedFiles();
+    });
+  }
+
+  if (elements.btnConfirmSendAll) {
+    elements.btnConfirmSendAll.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (state.stagedFiles.length > 0) {
+        const allIndices = state.stagedFiles.map((_, i) => i);
+        sendBatchFiles([...state.stagedFiles], allIndices);
       }
     });
   }
 
-  // STEP 2 Event Listeners: Modal Controls
+  // Event Listeners: Modal Controls
   if (elements.btnAcceptTransfer) {
     elements.btnAcceptTransfer.addEventListener('click', () => {
       if (elements.chkAutoAccept && elements.chkAutoAccept.checked) {
@@ -956,14 +1047,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Dropzone & File Selection Listeners
   if (elements.dropzone && elements.fileInput) {
     elements.dropzone.addEventListener('click', (e) => {
-      // Don't trigger file dialog if clicking staging buttons
       if (e.target.closest('#staging-container')) return;
       elements.fileInput.click();
     });
 
     elements.fileInput.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {
-        stageFile(e.target.files[0]);
+        addFilesToStaging(e.target.files);
       }
     });
 
@@ -980,7 +1070,7 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
       if (e.dataTransfer.files.length > 0) {
-        stageFile(e.dataTransfer.files[0]);
+        addFilesToStaging(e.dataTransfer.files);
       }
     });
   }

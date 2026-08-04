@@ -50,6 +50,22 @@
         .animate-stream {
             animation: streamPulse 1.5s infinite ease-in-out;
         }
+
+        /* Custom Scrollbar for Batch List */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(99, 102, 241, 0.4);
+            border-radius: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(99, 102, 241, 0.7);
+        }
     </style>
 </head>
 
@@ -82,7 +98,6 @@
 
         <!-- Room Card -->
         <section class="bg-white/5 border border-white/10 rounded-2xl p-6 md:p-8 shadow-2xl backdrop-blur-xl">
-            <!-- Header Section -->
             <div class="text-center max-w-lg mx-auto mb-8">
                 <h1 class="text-2xl font-bold text-white tracking-tight">Peer-to-Peer Pairing</h1>
                 <p class="text-sm text-slate-300/80 mt-1.5">
@@ -90,10 +105,8 @@
                 </p>
             </div>
 
-            <!-- Content Grid: Left QR / Right Room Controls -->
             <div class="grid grid-cols-1 md:grid-cols-12 gap-8 items-center">
-                
-                <!-- Left: QR Code Box (4 cols on desktop) -->
+                <!-- QR Box -->
                 <div class="md:col-span-5 flex flex-col items-center justify-center p-6 bg-slate-900/50 border border-white/10 rounded-2xl shadow-inner">
                     <div class="p-3 bg-white rounded-xl shadow-md border border-slate-200">
                         <div id="qrcode"></div>
@@ -101,10 +114,8 @@
                     <p class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mt-3">Scan with Mobile</p>
                 </div>
 
-                <!-- Right: Room Controls & Inputs (7 cols on desktop) -->
+                <!-- Room Controls -->
                 <div class="md:col-span-7 flex flex-col gap-5">
-
-                    <!-- Current Room Code Banner -->
                     <div class="flex items-center justify-between p-3.5 px-4 bg-slate-900/60 border border-slate-700/80 rounded-xl">
                         <span class="text-xs font-bold tracking-wider uppercase text-slate-400">Current Room Code</span>
                         <div id="room-code-display" class="text-2xl font-extrabold tracking-widest text-indigo-400 font-mono">
@@ -112,7 +123,6 @@
                         </div>
                     </div>
 
-                    <!-- Join via Room Code Input -->
                     <div>
                         <label for="join-room-code-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">
                             Join Another Room
@@ -134,7 +144,6 @@
                         </div>
                     </div>
 
-                    <!-- Shareable Link Input -->
                     <div>
                         <label for="share-url-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">
                             Shareable Link
@@ -155,10 +164,8 @@
                         </div>
                     </div>
 
-                    <!-- Divider -->
                     <div class="border-t border-white/10 my-0.5"></div>
 
-                    <!-- Create New Room Button -->
                     <button
                         id="btn-new-room"
                         class="w-full py-2.5 px-4 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 active:scale-[0.99]"
@@ -168,57 +175,68 @@
                         </svg>
                         Create New Room
                     </button>
-
                 </div>
             </div>
         </section>
 
-        <!-- File Transfer UI -->
+        <!-- File Transfer Section -->
         <section id="transfer-section"
             class="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-2xl backdrop-blur-xl hidden">
             <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4 text-center">
                 File Transfer
             </h2>
 
-            <!-- File Dropzone Input -->
+            <!-- Dropzone -->
             <div id="dropzone"
                 class="border-2 border-dashed border-white/20 hover:border-indigo-400/80 rounded-xl p-8 text-center transition-all cursor-pointer bg-white/5 hover:bg-white/10 backdrop-blur-md">
-                <input type="file" id="file-input" class="hidden" />
+                <input type="file" id="file-input" multiple class="hidden" />
                 <div id="dropzone-default" class="flex flex-col items-center gap-2">
                     <svg class="w-10 h-10 text-indigo-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                             d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12">
                         </path>
                     </svg>
-                    <p class="text-sm font-semibold text-slate-200">Click or drag & drop a file to send</p>
-                    <p class="text-xs text-slate-400">Any file type (Images, PDFs, Videos, Zip)</p>
+                    <p class="text-sm font-semibold text-slate-200">Click or drag & drop files to send</p>
+                    <p class="text-xs text-slate-400">Supports single or batch file selection</p>
                 </div>
 
-                <!-- STEP 1: Staging Preview Card (Hidden by Default) -->
-                <div id="staging-container" class="hidden flex flex-col items-center justify-center w-full">
-                    <div id="staging-preview" class="mb-3 flex items-center justify-center h-28 w-28 rounded-2xl bg-slate-900/90 border border-indigo-500/30 overflow-hidden shadow-2xl">
-                        <!-- Dynamic Thumbnail / Icon -->
+                <!-- BATCH STAGING QUEUE UI -->
+                <div id="staging-container" class="hidden flex flex-col w-full text-left">
+                    <div class="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
+                        <span id="staging-count" class="text-xs font-bold text-indigo-300 uppercase tracking-wider">
+                            Staged Files (0)
+                        </span>
+                        <div class="flex items-center gap-2">
+                            <button id="btn-add-more" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700/80 rounded-lg text-xs font-medium text-slate-200 transition-colors">
+                                + Add More
+                            </button>
+                            <button id="btn-clear-all-staging" class="px-3 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded-lg text-xs font-medium text-rose-300 transition-colors">
+                                Clear All
+                            </button>
+                        </div>
                     </div>
 
-                    <p id="staging-filename" class="text-sm font-bold text-slate-100 truncate max-w-xs text-center"></p>
-                    <p id="staging-filesize" class="text-xs text-slate-400 mt-1 font-mono"></p>
+                    <!-- Scrollable File List -->
+                    <div id="staging-queue-list" class="max-h-56 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar">
+                        <!-- Queue cards rendered via JS -->
+                    </div>
 
-                    <div class="flex items-center gap-3 mt-5 w-full max-w-xs">
-                        <button id="btn-cancel-staging" class="flex-1 py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700/60 transition-colors">
-                            Remove
-                        </button>
-                        <button id="btn-confirm-send" class="flex-1 py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shadow-lg shadow-indigo-600/30 transition-all active:scale-95">
-                            Send File
+                    <!-- Action Bar -->
+                    <div class="flex items-center justify-end gap-3 mt-4 pt-3 border-t border-white/10">
+                        <button id="btn-confirm-send-all" class="w-full sm:w-auto py-2.5 px-6 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all active:scale-95 flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                            </svg>
+                            Send All Files
                         </button>
                     </div>
                 </div>
             </div>
 
-            <!-- File Progress Section -->
+            <!-- Transfer Progress -->
             <div id="progress-container"
                 class="hidden mt-6 p-4 rounded-xl bg-white/5 border border-white/10 shadow-inner backdrop-blur-md">
                 
-                <!-- STEP 3: Active Transfer Direction Indicator -->
                 <div id="transfer-direction-bar" class="mb-3 p-2 bg-slate-900/60 border border-indigo-500/20 rounded-lg flex items-center justify-between text-xs text-indigo-300">
                     <span id="transfer-sender-label" class="font-medium">You</span>
                     <div class="flex-1 mx-3 h-0.5 bg-indigo-500/30 relative flex items-center justify-center">
@@ -243,13 +261,11 @@
                     </div>
                 </div>
 
-                <!-- Progress Bar -->
                 <div class="w-full bg-white/10 rounded-full h-2 overflow-hidden mb-2">
                     <div id="progress-bar" class="bg-indigo-500 h-2 rounded-full transition-all duration-150"
                         style="width: 0%"></div>
                 </div>
 
-                <!-- Real-time Metrics (Speed & ETA) -->
                 <div class="flex justify-between items-center text-[11px] text-slate-400 font-mono">
                     <span id="transfer-speed">0 KB/s</span>
                     <span id="transfer-eta">ETA: --</span>
@@ -257,14 +273,13 @@
             </div>
         </section>
 
-        <!-- Peers & Connection Status -->
+        <!-- Room Participants -->
         <section class="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-2xl backdrop-blur-xl">
             <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4 text-center">
                 Transfer Room Participants
             </h2>
 
             <div id="peers-list" class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-6">
-                <!-- Waiting placeholder -->
                 <div id="peer-placeholder"
                     class="col-span-full py-8 text-center text-slate-400 border border-dashed border-white/20 rounded-xl bg-white/5 backdrop-blur-md text-xs font-medium">
                     Waiting for second peer to join room...
@@ -274,7 +289,7 @@
 
     </main>
 
-    <!-- STEP 2: Receiver File Transfer Confirmation Modal -->
+    <!-- Receiver Modal -->
     <div id="incoming-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
         <div class="bg-slate-900 border border-white/10 rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col items-center text-center transform transition-all scale-100">
             <div class="h-12 w-12 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center mb-4 border border-indigo-500/30">
@@ -291,7 +306,6 @@
                 <p id="incoming-file-size" class="text-[11px] text-slate-400 font-mono mt-0.5"></p>
             </div>
 
-            <!-- Auto-Accept Checkbox -->
             <label class="flex items-center gap-2 mb-5 cursor-pointer text-xs text-slate-300 select-none">
                 <input type="checkbox" id="chk-auto-accept" class="rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5">
                 <span>Auto-accept future files in this session</span>
