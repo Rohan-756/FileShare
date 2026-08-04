@@ -1,11 +1,11 @@
-# 🚀 FileShare (LocalDrop) — Zero-Trust P2P File Transfer Engine
+# 🚀 FileShare — Zero-Trust P2P File Transfer Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https.shields.org)
 [![WebRTC](https://img.shields.io/badge/WebRTC-PeerToPeer-indigo.svg)](https://webrtc.org/)
 [![Security](https://img.shields.io/badge/Security-AES--GCM--256-emerald.svg)](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API)
 [![Node.js](https://img.shields.io/badge/Node.js-v18%2B-green.svg)](https://nodejs.org/)
 
-**FileShare (LocalDrop)** is a high-performance, zero-trust, peer-to-peer (P2P) file transfer application built with **WebRTC**, **Web Crypto API**, and **Node.js**. It enables private, high-speed file transfers directly between web browsers with **End-to-End Encryption (E2EE)** and direct disk streaming, completely bypassing third-party storage servers.
+**FileShare** is a high-performance, zero-trust, peer-to-peer (P2P) file transfer application built with **WebRTC**, **Web Crypto API**, and **Node.js**. It enables private, high-speed file transfers directly between web browsers with **End-to-End Encryption (E2EE)** and direct disk streaming, completely bypassing third-party storage servers.
 
 ---
 
