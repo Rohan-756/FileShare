@@ -1098,6 +1098,12 @@ document.addEventListener('DOMContentLoaded', () => {
     state.socket = io(window.location.origin);
 
     state.socket.on('connect', () => {
+      // If a transfer is actively running, preserve the existing WebRTC DataChannel
+      if (state.isTransferring && state.peerConnection) {
+        console.log('Signaling reconnected mid-stream. Preserving active WebRTC DataChannel.');
+        return;
+      }
+
       updateBadge('Waiting for peer', 'bg-sky-400');
       state.socket.emit('create-or-join-room', {
         roomId: state.roomId,
