@@ -44,6 +44,12 @@ document.addEventListener('DOMContentLoaded', () => {
     peerConnection: null,
     dataChannel: null,
 
+    // E2EE Cryptographic State
+    ecdhKeyPair: null,
+    localPublicJwk: null,
+    peerPublicJwk: null,
+    sharedKey: null,
+
     // Sender Batch Staging
     stagedFiles: [],
 
@@ -54,9 +60,11 @@ document.addEventListener('DOMContentLoaded', () => {
     incomingFileInfo: null,
     receivedChunks: [],
     receivedSize: 0,
-    CHUNK_SIZE: 16 * 1024,
+    CHUNK_SIZE: 64 * 1024, // 64 KB chunk size for optimized WebRTC transfer
     fileHandle: null,
     writableStream: null,
+    incomingFileHandles: {}, // Pre-opened handles map for batch downloads
+    incomingFileStreams: {}, // Pre-opened streams map for batch downloads
 
     // Metrics & Controls
     isTransferring: false,
@@ -200,6 +208,59 @@ document.addEventListener('DOMContentLoaded', () => {
       </span>
       <span>${statusText}</span>
     `;
+  }
+
+  // Web Crypto API E2EE Cryptographic Helpers
+  async function initializeE2EE() {
+    try {
+      state.ecdhKeyPair = await window.crypto.subtle.generateKey(
+        {
+          name: 'ECDH',
+          namedCurve: 'P-256'
+        },
+        true,
+        ['deriveKey', 'deriveBits']
+      );
+      state.localPublicJwk = await window.crypto.subtle.exportKey('jwk', state.ecdhKeyPair.publicKey);
+      console.log('E2EE Keys generated locally.');
+    } catch (e) {
+      console.error('Failed to initialize local E2EE keys:', e);
+      showToast('E2EE initialization failed. Transfers will run unencrypted.', 'error');
+    }
+  }
+
+  async function handlePeerPublicKey(peerJwk) {
+    try {
+      state.peerPublicJwk = peerJwk;
+      const peerPublicKey = await window.crypto.subtle.importKey(
+        'jwk',
+        peerJwk,
+        {
+          name: 'ECDH',
+          namedCurve: 'P-256'
+        },
+        true,
+        []
+      );
+      state.sharedKey = await window.crypto.subtle.deriveKey(
+        {
+          name: 'ECDH',
+          public: peerPublicKey
+        },
+        state.ecdhKeyPair.privateKey,
+        {
+          name: 'AES-GCM',
+          length: 256
+        },
+        false,
+        ['encrypt', 'decrypt']
+      );
+      console.log('Derived AES-GCM-256 key successfully. Connection is secure.');
+      showToast('Connection secured (E2EE Active)', 'success');
+    } catch (e) {
+      console.error('Failed to derive shared key:', e);
+      showToast('Failed to secure connection. Transfer might be insecure.', 'error');
+    }
   }
 
   const getEl = (id) => document.getElementById(id);
@@ -423,11 +484,32 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function submitReceiverBatchResponse(isAcceptingAny) {
+  async function submitReceiverBatchResponse(isAcceptingAny) {
     const decisions = {};
-    state.incomingBatch.forEach((item) => {
-      decisions[item.fileId] = isAcceptingAny ? item.accepted : false;
-    });
+    
+    // Clear any previous file streams / handles
+    state.incomingFileStreams = {};
+    state.incomingFileHandles = {};
+
+    for (const item of state.incomingBatch) {
+      const accepted = isAcceptingAny ? item.accepted : false;
+      decisions[item.fileId] = accepted;
+
+      if (accepted) {
+        if ('showSaveFilePicker' in window) {
+          try {
+            // Prompt user for save file path (this requires a user gesture and is synchronous with the click event)
+            const fileHandle = await window.showSaveFilePicker({ suggestedName: item.name });
+            const writableStream = await fileHandle.createWritable();
+            state.incomingFileHandles[item.fileId] = fileHandle;
+            state.incomingFileStreams[item.fileId] = writableStream;
+          } catch (e) {
+            console.warn(`File picker cancelled or failed for ${item.name}, falling back to memory buffering:`, e);
+            // We still accept it, but since state.incomingFileStreams[item.fileId] is empty, it will fall back to memory buffering.
+          }
+        }
+      }
+    }
 
     if (state.dataChannel && state.dataChannel.readyState === 'open') {
       state.dataChannel.send(
@@ -570,7 +652,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function handleSignalMessage({ senderId, signalData }) {
-    if (signalData.type === 'offer') {
+    if (signalData.type === 'ecdh-public-key') {
+      await handlePeerPublicKey(signalData.key);
+      if (state.localPublicJwk && !state.peerPublicJwk) {
+        state.socket.emit('signal', {
+          targetId: senderId,
+          signalData: { type: 'ecdh-public-key', key: state.localPublicJwk }
+        });
+      }
+    } else if (signalData.type === 'offer') {
       const pc = createPeerConnection(senderId);
       await pc.setRemoteDescription(new RTCSessionDescription(signalData.offer));
       const answer = await pc.createAnswer();
@@ -717,44 +807,62 @@ document.addEventListener('DOMContentLoaded', () => {
     playAudioFeedback('start');
 
     let offset = 0;
-    state.dataChannel.bufferedAmountLowThreshold = 65536;
+    state.dataChannel.bufferedAmountLowThreshold = 1024 * 1024; // 1 MB low watermark
 
-    return new Promise((resolve) => {
-      const sendChunks = () => {
-        while (offset < file.size) {
-          if (state.transferCancelled) {
-            if (state.dataChannel) state.dataChannel.onbufferedamountlow = null;
-            resetTransferUI('Transfer cancelled');
-            playAudioFeedback('cancel');
-            resolve(false);
-            return;
-          }
+    while (offset < file.size) {
+      if (state.transferCancelled) {
+        if (state.dataChannel) state.dataChannel.onbufferedamountlow = null;
+        resetTransferUI('Transfer cancelled');
+        playAudioFeedback('cancel');
+        return false;
+      }
 
-          if (state.dataChannel.bufferedAmount > state.dataChannel.bufferedAmountLowThreshold) {
-            state.dataChannel.onbufferedamountlow = () => {
-              state.dataChannel.onbufferedamountlow = null;
-              sendChunks();
-            };
-            return;
-          }
+      // Backpressure Check: 16 MB high watermark
+      if (state.dataChannel.bufferedAmount > 16 * 1024 * 1024) {
+        await new Promise((res) => {
+          state.dataChannel.onbufferedamountlow = () => {
+            state.dataChannel.onbufferedamountlow = null;
+            res();
+          };
+        });
+        continue;
+      }
 
-          const chunk = arrayBuffer.slice(offset, offset + state.CHUNK_SIZE);
-          state.dataChannel.send(chunk);
-          offset += chunk.byteLength;
+      const end = Math.min(offset + state.CHUNK_SIZE, file.size);
+      const plaintextChunk = arrayBuffer.slice(offset, end);
+      let packetBuffer;
 
-          updateTransferMetrics(offset, file.size);
-        }
+      if (state.sharedKey) {
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const encrypted = await window.crypto.subtle.encrypt(
+          {
+            name: 'AES-GCM',
+            iv: iv
+          },
+          state.sharedKey,
+          plaintextChunk
+        );
 
-        if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
-        showToast(`Sent ${file.name}`, 'success');
-        playAudioFeedback('complete');
-        triggerHaptic([100, 50, 100]);
-        setTimeout(() => resetTransferUI(), 1500);
-        resolve(true);
-      };
+        const packet = new Uint8Array(12 + encrypted.byteLength);
+        packet.set(iv, 0);
+        packet.set(new Uint8Array(encrypted), 12);
+        packetBuffer = packet.buffer;
+      } else {
+        packetBuffer = plaintextChunk;
+      }
 
-      sendChunks();
-    });
+      state.dataChannel.send(packetBuffer);
+      offset += plaintextChunk.byteLength;
+
+      updateTransferMetrics(offset, file.size);
+    }
+
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
+    showToast(`Sent ${file.name}`, 'success');
+    playAudioFeedback('complete');
+    triggerHaptic([100, 50, 100]);
+    setTimeout(() => resetTransferUI(), 1500);
+    return true;
   }
 
   // RECEIVER INCOMING DATA DISPATCHER
@@ -802,14 +910,9 @@ document.addEventListener('DOMContentLoaded', () => {
           if (elements.transferFilename) elements.transferFilename.textContent = parsed.name;
           if (elements.transferStatus) elements.transferStatus.textContent = 'Receiving stream...';
 
-          if ('showSaveFilePicker' in window && !state.writableStream) {
-            try {
-              state.fileHandle = await window.showSaveFilePicker({ suggestedName: parsed.name });
-              state.writableStream = await state.fileHandle.createWritable();
-            } catch (e) {
-              // Fallback
-            }
-          }
+          // Assign the pre-opened stream and handle
+          state.writableStream = (state.incomingFileStreams && state.incomingFileStreams[parsed.fileId]) || null;
+          state.fileHandle = (state.incomingFileHandles && state.incomingFileHandles[parsed.fileId]) || null;
 
           updateTransferMetrics(0, parsed.size);
           return;
@@ -818,13 +921,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (parsed.type === 'cancel') {
           state.transferCancelled = true;
           state.isTransferring = false;
-          state.incomingFileInfo = null;
 
           if (state.writableStream) {
             await state.writableStream.abort().catch(() => {});
             state.writableStream = null;
+            if (state.incomingFileInfo) {
+              delete state.incomingFileStreams[state.incomingFileInfo.fileId];
+              delete state.incomingFileHandles[state.incomingFileInfo.fileId];
+            }
           }
 
+          state.incomingFileInfo = null;
           state.receivedChunks = [];
           resetTransferUI('Transfer cancelled');
           showToast('Transfer was cancelled', 'error');
@@ -840,100 +947,45 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((data instanceof ArrayBuffer || ArrayBuffer.isView(data)) && state.incomingFileInfo) {
       if (state.transferCancelled) return;
 
-      const chunk = data instanceof ArrayBuffer ? data : data.buffer;
-      state.receivedSize += chunk.byteLength;
+      const packetBuffer = data instanceof ArrayBuffer ? data : data.buffer;
+      let decryptedChunk;
+
+      if (state.sharedKey) {
+        try {
+          const packet = new Uint8Array(packetBuffer);
+          const iv = packet.subarray(0, 12);
+          const ciphertext = packet.subarray(12);
+
+          decryptedChunk = await window.crypto.subtle.decrypt(
+            {
+              name: 'AES-GCM',
+              iv: iv
+            },
+            state.sharedKey,
+            ciphertext
+          );
+        } catch (decErr) {
+          console.error('Decryption failed! Bit-rot or wrong key:', decErr);
+          showToast('Decryption failed. Transfer aborted.', 'error');
+          state.transferCancelled = true;
+          resetTransferUI('Decryption failed');
+          playAudioFeedback('cancel');
+          return;
+        }
+      } else {
+        decryptedChunk = packetBuffer;
+      }
+
+      state.receivedSize += decryptedChunk.byteLength;
 
       if (state.writableStream) {
-        await state.writableStream.write(chunk);
+        await state.writableStream.write(decryptedChunk);
       } else {
-        state.receivedChunks.push(chunk);
+        state.receivedChunks.push(decryptedChunk);
       }
 
       updateTransferMetrics(state.receivedSize, state.incomingFileInfo.size);
 
-      // SHA-256 Helper Function
-  async function computeSHA256(arrayBuffer) {
-    const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  // Inside streamSingleFile (Sender side):
-  async function streamSingleFile(file, metadata, fileIndex, totalFiles) {
-    if (state.transferCancelled) return false;
-
-    state.transferStartTime = Date.now();
-    state.lastMetricTime = Date.now();
-    state.lastMetricBytes = 0;
-
-    if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'You (Sending)';
-    if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
-
-    const label = totalFiles > 1 ? `[${fileIndex}/${totalFiles}] ${file.name}` : file.name;
-    if (elements.transferFilename) elements.transferFilename.textContent = label;
-    if (elements.transferStatus) elements.transferStatus.textContent = 'Computing SHA-256 hash...';
-
-    const arrayBuffer = await file.arrayBuffer();
-    const checksum = await computeSHA256(arrayBuffer);
-
-    if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
-
-    state.dataChannel.send(
-      JSON.stringify({
-        type: 'start-file-stream',
-        fileId: metadata.fileId,
-        name: metadata.name,
-        size: metadata.size,
-        mimeType: metadata.mimeType,
-        checksum: checksum
-      })
-    );
-
-    playAudioFeedback('start');
-
-    let offset = 0;
-    state.dataChannel.bufferedAmountLowThreshold = 65536;
-
-    return new Promise((resolve) => {
-      const sendChunks = () => {
-        while (offset < file.size) {
-          if (state.transferCancelled) {
-            if (state.dataChannel) state.dataChannel.onbufferedamountlow = null;
-            resetTransferUI('Transfer cancelled');
-            playAudioFeedback('cancel');
-            resolve(false);
-            return;
-          }
-
-          if (state.dataChannel.bufferedAmount > state.dataChannel.bufferedAmountLowThreshold) {
-            state.dataChannel.onbufferedamountlow = () => {
-              state.dataChannel.onbufferedamountlow = null;
-              sendChunks();
-            };
-            return;
-          }
-
-          const chunk = arrayBuffer.slice(offset, offset + state.CHUNK_SIZE);
-          state.dataChannel.send(chunk);
-          offset += chunk.byteLength;
-
-          updateTransferMetrics(offset, file.size);
-        }
-
-        if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
-        showToast(`Sent ${file.name}`, 'success');
-        playAudioFeedback('complete');
-        triggerHaptic([100, 50, 100]);
-        setTimeout(() => resetTransferUI(), 1500);
-        resolve(true);
-      };
-
-      sendChunks();
-    });
-  }
-
-  // Inside handleIncomingData (Receiver side completion logic):
-  // Replace the stream completion block inside handleIncomingData with this:
       if (state.receivedSize >= state.incomingFileInfo.size) {
         if (elements.transferStatus) elements.transferStatus.textContent = 'Verifying SHA-256 checksum...';
 
@@ -941,6 +993,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.writableStream) {
           await state.writableStream.close();
           state.writableStream = null;
+          // Delete from state trackers
+          delete state.incomingFileStreams[state.incomingFileInfo.fileId];
+          delete state.incomingFileHandles[state.incomingFileInfo.fileId];
+          
           // For File System Access API, read back or rely on chunk buffer
           receivedBuffer = await (await state.fileHandle.getFile()).arrayBuffer();
         } else {
@@ -1098,17 +1154,19 @@ document.addEventListener('DOMContentLoaded', () => {
     state.socket = io(window.location.origin);
 
     state.socket.on('connect', () => {
-      // If a transfer is actively running, preserve the existing WebRTC DataChannel
-      if (state.isTransferring && state.peerConnection) {
-        console.log('Signaling reconnected mid-stream. Preserving active WebRTC DataChannel.');
-        return;
-      }
-
-      updateBadge('Waiting for peer', 'bg-sky-400');
+      // Always register our presence on the socket room
       state.socket.emit('create-or-join-room', {
         roomId: state.roomId,
         userInfo: localUser
       });
+
+      if (state.isTransferring && state.peerConnection && state.peerConnection.connectionState === 'connected') {
+        console.log('Signaling reconnected mid-stream. Preserving active WebRTC connection.');
+        updateBadge('Connected', 'bg-emerald-400');
+        return;
+      }
+
+      updateBadge('Waiting for peer', 'bg-sky-400');
     });
 
     state.socket.on('room-peers', ({ isInitiator, peers }) => {
@@ -1120,7 +1178,23 @@ document.addEventListener('DOMContentLoaded', () => {
     state.socket.on('ready-to-connect', () => {
       const targetPeer = state.peers.find((p) => p.socketId !== state.socket.id);
       if (targetPeer) {
-        startWebRTCOffer(targetPeer.socketId);
+        // Send our ECDH public key to the peer
+        if (state.localPublicJwk) {
+          state.socket.emit('signal', {
+            targetId: targetPeer.socketId,
+            signalData: { type: 'ecdh-public-key', key: state.localPublicJwk }
+          });
+        }
+
+        // If WebRTC is already connected or connecting, do not renegotiate
+        if (state.peerConnection && (state.peerConnection.connectionState === 'connected' || state.peerConnection.connectionState === 'connecting')) {
+          console.log('Already connected/connecting. Skipping WebRTC offer.');
+          return;
+        }
+
+        if (state.isInitiator) {
+          startWebRTCOffer(targetPeer.socketId);
+        }
       }
     });
 
@@ -1128,6 +1202,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     state.socket.on('peer-disconnected', ({ peerId }) => {
       state.peers = state.peers.filter((p) => p.socketId !== peerId);
+      
+      // If WebRTC is still connected, do not close the active session
+      if (state.peerConnection && state.peerConnection.connectionState === 'connected') {
+        console.log('Peer disconnected from signaling, but WebRTC is active. Keeping connection.');
+        renderPeers();
+        return;
+      }
+
       if (state.peerConnection) {
         state.peerConnection.close();
         state.peerConnection = null;
@@ -1241,6 +1323,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  initializeE2EE();
   initRoom();
   initSocket();
 });

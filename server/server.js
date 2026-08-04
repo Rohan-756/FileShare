@@ -120,11 +120,13 @@ io.on('connection', (socket) => {
     socket.roomId = roomId;
 
     const peersArray = Array.from(roomPeers.values());
-    const isInitiator = peersArray.length === 1;
 
-    io.to(roomId).emit('room-peers', {
-      isInitiator,
-      peers: peersArray
+    roomPeers.forEach((peer, peerSocketId) => {
+      const isPeerInitiator = peersArray[0].socketId === peerSocketId;
+      io.to(peerSocketId).emit('room-peers', {
+        isInitiator: isPeerInitiator,
+        peers: peersArray
+      });
     });
 
     if (roomPeers.size === 2) {
