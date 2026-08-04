@@ -1220,7 +1220,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     state.socket.on('disconnect', () => {
-      updateBadge('Offline', 'bg-rose-500');
+      if (state.peerConnection && state.peerConnection.connectionState === 'connected') {
+        console.log('Signaling server offline, but active WebRTC P2P connection is live.');
+        updateBadge('Connected (P2P Direct)', 'bg-emerald-400');
+      } else {
+        updateBadge('Signaling Offline', 'bg-rose-500');
+      }
     });
   }
 
