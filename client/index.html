@@ -6,26 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FileShare</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Socket.io Client -->
     <script src="/socket.io/socket.io.js"></script>
-    <!-- QRCode.js Library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="app.js" defer></script>
 
     <style>
-        /* Smooth Flowing Gradient Animation */
         @keyframes flowGradient {
-            0% {
-                background-position: 0% 50%;
-            }
-
-            50% {
-                background-position: 100% 50%;
-            }
-
-            100% {
-                background-position: 0% 50%;
-            }
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
         }
 
         .bg-flowing-mesh {
@@ -34,13 +23,11 @@
             animation: flowGradient 18s ease infinite;
         }
 
-        /* Fix QRCode sizing canvas */
         #qrcode img, #qrcode canvas {
             margin: auto;
             display: block;
         }
 
-        /* Transfer Animation Pulses */
         @keyframes streamPulse {
             0% { opacity: 0.3; transform: scaleX(0.95); }
             50% { opacity: 1; transform: scaleX(1.05); }
@@ -51,7 +38,6 @@
             animation: streamPulse 1.5s infinite ease-in-out;
         }
 
-        /* Custom Scrollbar for Batch List */
         .custom-scrollbar::-webkit-scrollbar {
             width: 6px;
         }
@@ -69,24 +55,20 @@
     </style>
 </head>
 
-<body
-    class="relative min-h-screen flex flex-col font-sans antialiased text-slate-100 bg-flowing-mesh overflow-x-hidden">
+<body class="relative min-h-screen flex flex-col font-sans antialiased text-slate-100 bg-flowing-mesh overflow-x-hidden">
 
     <!-- Header -->
     <header class="border-b border-white/10 bg-slate-950/40 backdrop-blur-md sticky top-0 z-50">
         <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
             <div class="flex items-center gap-2.5">
-                <div
-                    class="h-8 w-8 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
+                <div class="h-8 w-8 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
                     FS
                 </div>
-                <span
-                    class="font-bold text-lg tracking-tight bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
+                <span class="font-bold text-lg tracking-tight bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
                     FileShare
                 </span>
             </div>
-            <div id="connection-badge"
-                class="flex items-center gap-2 text-xs font-medium px-3.5 py-1.5 rounded-full bg-slate-900/80 border border-slate-700/60 text-slate-200 backdrop-blur-md shadow-sm">
+            <div id="connection-badge" class="flex items-center gap-2 text-xs font-medium px-3.5 py-1.5 rounded-full bg-slate-900/80 border border-slate-700/60 text-slate-200 backdrop-blur-md shadow-sm">
                 <span class="h-2 w-2 rounded-full bg-amber-500 animate-pulse"></span>
                 <span>Connecting...</span>
             </div>
@@ -106,7 +88,6 @@
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-12 gap-8 items-center">
-                <!-- QR Box -->
                 <div class="md:col-span-5 flex flex-col items-center justify-center p-6 bg-slate-900/50 border border-white/10 rounded-2xl shadow-inner">
                     <div class="p-3 bg-white rounded-xl shadow-md border border-slate-200">
                         <div id="qrcode"></div>
@@ -114,62 +95,31 @@
                     <p class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mt-3">Scan with Mobile</p>
                 </div>
 
-                <!-- Room Controls -->
                 <div class="md:col-span-7 flex flex-col gap-5">
                     <div class="flex items-center justify-between p-3.5 px-4 bg-slate-900/60 border border-slate-700/80 rounded-xl">
                         <span class="text-xs font-bold tracking-wider uppercase text-slate-400">Current Room Code</span>
-                        <div id="room-code-display" class="text-2xl font-extrabold tracking-widest text-indigo-400 font-mono">
-                            ------
+                        <div id="room-code-display" class="text-2xl font-extrabold tracking-widest text-indigo-400 font-mono">------</div>
+                    </div>
+
+                    <div>
+                        <label for="join-room-code-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">Join Another Room</label>
+                        <div class="flex items-center gap-2">
+                            <input type="text" id="join-room-code-input" placeholder="Enter 6-digit code..." maxlength="6" class="w-full px-3.5 py-2.5 text-sm bg-slate-900/80 border border-slate-700/80 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono" />
+                            <button id="btn-join-room" class="shrink-0 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg transition-all">Join</button>
                         </div>
                     </div>
 
                     <div>
-                        <label for="join-room-code-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">
-                            Join Another Room
-                        </label>
+                        <label for="share-url-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">Shareable Link</label>
                         <div class="flex items-center gap-2">
-                            <input
-                                type="text"
-                                id="join-room-code-input"
-                                placeholder="Enter 6-digit code..."
-                                maxlength="6"
-                                class="w-full px-3.5 py-2.5 text-sm bg-slate-900/80 border border-slate-700/80 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono"
-                            />
-                            <button
-                                id="btn-join-room"
-                                class="shrink-0 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-indigo-600/20 transition-all duration-200 active:scale-95"
-                            >
-                                Join
-                            </button>
-                        </div>
-                    </div>
-
-                    <div>
-                        <label for="share-url-input" class="block text-xs font-semibold tracking-wide text-slate-300 mb-1.5">
-                            Shareable Link
-                        </label>
-                        <div class="flex items-center gap-2">
-                            <input
-                                type="text"
-                                id="share-url-input"
-                                readonly
-                                class="w-full px-3.5 py-2.5 text-xs bg-slate-900/80 border border-slate-700/80 rounded-xl text-slate-300 focus:outline-none font-mono truncate"
-                            />
-                            <button
-                                id="btn-copy-link"
-                                class="shrink-0 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-indigo-600/20 transition-all duration-200 active:scale-95 whitespace-nowrap"
-                            >
-                                Copy Link
-                            </button>
+                            <input type="text" id="share-url-input" readonly class="w-full px-3.5 py-2.5 text-xs bg-slate-900/80 border border-slate-700/80 rounded-xl text-slate-300 font-mono truncate" />
+                            <button id="btn-copy-link" class="shrink-0 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg transition-all">Copy Link</button>
                         </div>
                     </div>
 
                     <div class="border-t border-white/10 my-0.5"></div>
 
-                    <button
-                        id="btn-new-room"
-                        class="w-full py-2.5 px-4 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 active:scale-[0.99]"
-                    >
+                    <button id="btn-new-room" class="w-full py-2.5 px-4 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-slate-200 text-xs font-semibold rounded-xl flex items-center justify-center gap-2">
                         <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                         </svg>
@@ -180,50 +130,40 @@
         </section>
 
         <!-- File Transfer Section -->
-        <section id="transfer-section"
-            class="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-2xl backdrop-blur-xl hidden">
+        <section id="transfer-section" class="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-2xl backdrop-blur-xl hidden">
             <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4 text-center">
                 File Transfer
             </h2>
 
-            <!-- Dropzone -->
-            <div id="dropzone"
-                class="border-2 border-dashed border-white/20 hover:border-indigo-400/80 rounded-xl p-8 text-center transition-all cursor-pointer bg-white/5 hover:bg-white/10 backdrop-blur-md">
+            <!-- Sender Staging Dropzone -->
+            <div id="dropzone" class="border-2 border-dashed border-white/20 hover:border-indigo-400/80 rounded-xl p-8 text-center transition-all cursor-pointer bg-white/5 hover:bg-white/10 backdrop-blur-md">
                 <input type="file" id="file-input" multiple class="hidden" />
                 <div id="dropzone-default" class="flex flex-col items-center gap-2">
                     <svg class="w-10 h-10 text-indigo-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12">
-                        </path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                     </svg>
                     <p class="text-sm font-semibold text-slate-200">Click or drag & drop files to send</p>
                     <p class="text-xs text-slate-400">Supports single or batch file selection</p>
                 </div>
 
-                <!-- BATCH STAGING QUEUE UI -->
+                <!-- SENDER BATCH STAGING QUEUE -->
                 <div id="staging-container" class="hidden flex flex-col w-full text-left">
                     <div class="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
-                        <span id="staging-count" class="text-xs font-bold text-indigo-300 uppercase tracking-wider">
-                            Staged Files (0)
-                        </span>
+                        <span id="staging-count" class="text-xs font-bold text-indigo-300 uppercase tracking-wider">Staged Files (0)</span>
                         <div class="flex items-center gap-2">
-                            <button id="btn-add-more" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700/80 rounded-lg text-xs font-medium text-slate-200 transition-colors">
+                            <button id="btn-add-more" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700/80 rounded-lg text-xs font-medium text-slate-200">
                                 + Add More
                             </button>
-                            <button id="btn-clear-all-staging" class="px-3 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded-lg text-xs font-medium text-rose-300 transition-colors">
+                            <button id="btn-clear-all-staging" class="px-3 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded-lg text-xs font-medium text-rose-300">
                                 Clear All
                             </button>
                         </div>
                     </div>
 
-                    <!-- Scrollable File List -->
-                    <div id="staging-queue-list" class="max-h-56 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar">
-                        <!-- Queue cards rendered via JS -->
-                    </div>
+                    <div id="staging-queue-list" class="max-h-56 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar"></div>
 
-                    <!-- Action Bar -->
                     <div class="flex items-center justify-end gap-3 mt-4 pt-3 border-t border-white/10">
-                        <button id="btn-confirm-send-all" class="w-full sm:w-auto py-2.5 px-6 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all active:scale-95 flex items-center justify-center gap-2">
+                        <button id="btn-confirm-send-all" class="w-full sm:w-auto py-2.5 px-6 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg flex items-center justify-center gap-2">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
                             </svg>
@@ -233,10 +173,32 @@
                 </div>
             </div>
 
-            <!-- Transfer Progress -->
-            <div id="progress-container"
-                class="hidden mt-6 p-4 rounded-xl bg-white/5 border border-white/10 shadow-inner backdrop-blur-md">
-                
+            <!-- RECEIVER INCOMING BATCH QUEUE UI -->
+            <div id="receiver-queue-container" class="hidden mt-6 p-5 rounded-2xl bg-slate-900/90 border border-indigo-500/30 shadow-2xl backdrop-blur-xl flex flex-col gap-4">
+                <div class="flex items-center justify-between border-b border-white/10 pb-3">
+                    <div>
+                        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                            <span class="h-2 w-2 rounded-full bg-indigo-400 animate-ping"></span>
+                            Incoming Transfer Request
+                        </h3>
+                        <p id="receiver-peer-info" class="text-xs text-indigo-300 font-medium mt-0.5">Peer wants to send files</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="btn-decline-all-incoming" class="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-semibold">
+                            Decline All
+                        </button>
+                        <button id="btn-accept-all-incoming" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md">
+                            Accept All
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Scrollable Receiver Batch List -->
+                <div id="receiver-file-list" class="max-h-56 overflow-y-auto space-y-2.5 pr-1 custom-scrollbar"></div>
+            </div>
+
+            <!-- Transfer Progress Bar Card -->
+            <div id="progress-container" class="hidden mt-6 p-4 rounded-xl bg-white/5 border border-white/10 shadow-inner backdrop-blur-md">
                 <div id="transfer-direction-bar" class="mb-3 p-2 bg-slate-900/60 border border-indigo-500/20 rounded-lg flex items-center justify-between text-xs text-indigo-300">
                     <span id="transfer-sender-label" class="font-medium">You</span>
                     <div class="flex-1 mx-3 h-0.5 bg-indigo-500/30 relative flex items-center justify-center">
@@ -247,23 +209,19 @@
 
                 <div class="flex items-center justify-between mb-2">
                     <div class="flex flex-col min-w-0 pr-2">
-                        <span id="transfer-filename"
-                            class="text-sm font-semibold text-slate-200 truncate">filename.ext</span>
-                        <span id="transfer-status"
-                            class="text-xs text-indigo-400 font-medium mt-0.5">Initializing...</span>
+                        <span id="transfer-filename" class="text-sm font-semibold text-slate-200 truncate">filename.ext</span>
+                        <span id="transfer-status" class="text-xs text-indigo-400 font-medium mt-0.5">Initializing...</span>
                     </div>
                     <div class="flex items-center gap-3 shrink-0">
                         <span id="transfer-percentage" class="text-xs font-bold text-slate-300">0%</span>
-                        <button id="btn-cancel-transfer"
-                            class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 transition-colors">
+                        <button id="btn-cancel-transfer" class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30">
                             Cancel
                         </button>
                     </div>
                 </div>
 
                 <div class="w-full bg-white/10 rounded-full h-2 overflow-hidden mb-2">
-                    <div id="progress-bar" class="bg-indigo-500 h-2 rounded-full transition-all duration-150"
-                        style="width: 0%"></div>
+                    <div id="progress-bar" class="bg-indigo-500 h-2 rounded-full transition-all duration-150" style="width: 0%"></div>
                 </div>
 
                 <div class="flex justify-between items-center text-[11px] text-slate-400 font-mono">
@@ -278,49 +236,14 @@
             <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4 text-center">
                 Transfer Room Participants
             </h2>
-
             <div id="peers-list" class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-6">
-                <div id="peer-placeholder"
-                    class="col-span-full py-8 text-center text-slate-400 border border-dashed border-white/20 rounded-xl bg-white/5 backdrop-blur-md text-xs font-medium">
+                <div id="peer-placeholder" class="col-span-full py-8 text-center text-slate-400 border border-dashed border-white/20 rounded-xl bg-white/5 text-xs font-medium">
                     Waiting for second peer to join room...
                 </div>
             </div>
         </section>
 
     </main>
-
-    <!-- Receiver Modal -->
-    <div id="incoming-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
-        <div class="bg-slate-900 border border-white/10 rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col items-center text-center transform transition-all scale-100">
-            <div class="h-12 w-12 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center mb-4 border border-indigo-500/30">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                </svg>
-            </div>
-            
-            <h3 class="text-base font-bold text-white">Incoming File Request</h3>
-            <p id="incoming-peer-name" class="text-xs text-indigo-300 font-medium mt-1">Peer wants to send a file</p>
-            
-            <div class="w-full bg-white/5 border border-white/10 rounded-xl p-3 my-4 flex flex-col items-center">
-                <p id="incoming-file-name" class="text-xs font-bold text-slate-200 truncate max-w-full"></p>
-                <p id="incoming-file-size" class="text-[11px] text-slate-400 font-mono mt-0.5"></p>
-            </div>
-
-            <label class="flex items-center gap-2 mb-5 cursor-pointer text-xs text-slate-300 select-none">
-                <input type="checkbox" id="chk-auto-accept" class="rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5">
-                <span>Auto-accept future files in this session</span>
-            </label>
-
-            <div class="flex items-center gap-3 w-full">
-                <button id="btn-reject-transfer" class="flex-1 py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700 transition-colors">
-                    Decline
-                </button>
-                <button id="btn-accept-transfer" class="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white shadow-lg shadow-emerald-600/30 transition-all active:scale-95">
-                    Accept
-                </button>
-            </div>
-        </div>
-    </div>
 
     <!-- Footer -->
     <footer class="border-t border-white/10 py-4 text-center text-xs text-slate-500 backdrop-blur-md">

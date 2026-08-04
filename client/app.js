@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // 1. Persistent User Identity Management
   function getOrCreateLocalUser() {
     const STORAGE_KEY = 'p2p_user_profile';
     const savedUser = localStorage.getItem(STORAGE_KEY);
@@ -36,7 +35,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const localUser = getOrCreateLocalUser();
 
-  // 2. App State
   const state = {
     socket: null,
     roomId: null,
@@ -46,35 +44,32 @@ document.addEventListener('DOMContentLoaded', () => {
     peerConnection: null,
     dataChannel: null,
 
-    // Step 1: Batch Staging Queue State
+    // Sender Batch Staging
     stagedFiles: [],
 
-    // Step 2: Auto-accept state & Modal Resolvers
-    autoAccept: false,
-    incomingFileInfo: null,
-    receiverResponseResolver: null,
+    // Receiver Batch Staging Queue
+    incomingBatch: [], // List of { fileId, name, size, mimeType, senderName, status: 'pending'|'accepted'|'declined' }
+    pendingFileResolvers: {}, // Maps fileId -> resolve(boolean)
 
-    // Incoming file assembly state
+    // Active File Stream state
+    incomingFileInfo: null,
     receivedChunks: [],
     receivedSize: 0,
     CHUNK_SIZE: 16 * 1024,
-
-    // Stream handles
     fileHandle: null,
     writableStream: null,
 
-    // Transfer & Speed Metrics
+    // Metrics & Controls
     isTransferring: false,
     transferStartTime: 0,
     lastMetricTime: 0,
     lastMetricBytes: 0,
     transferCancelled: false,
 
-    // Handshake resolver
+    // Handshake Resolvers
     receiverReadyResolver: null
   };
 
-  // STUN + TURN Fallback Configuration
   const ICE_SERVERS = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -92,7 +87,6 @@ document.addEventListener('DOMContentLoaded', () => {
     ]
   };
 
-  // Helper Utilities
   function generateRoomId() {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
@@ -120,7 +114,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return `ETA: ${mins}m ${secs}s`;
   }
 
-  // Audio & Haptic Feedback Helpers
   function playAudioFeedback(type) {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -153,7 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
         osc.stop(ctx.currentTime + 0.2);
       }
     } catch (e) {
-      console.warn('Web Audio API disabled or blocked:', e);
+      console.warn('Audio error:', e);
     }
   }
 
@@ -181,9 +174,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toast.textContent = message;
 
     container.appendChild(toast);
-    requestAnimationFrame(() => {
-      toast.classList.remove('translate-y-2', 'opacity-0');
-    });
+    requestAnimationFrame(() => toast.classList.remove('translate-y-2', 'opacity-0'));
 
     setTimeout(() => {
       toast.classList.add('opacity-0', 'translate-y-2');
@@ -193,7 +184,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateBadge(statusText, dotColorClass) {
     if (!elements.badge) return;
-
     const isLiveState = dotColorClass.includes('emerald') || dotColorClass.includes('sky');
 
     elements.badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs font-medium text-slate-200 backdrop-blur-md shadow-sm transition-all duration-200';
@@ -206,7 +196,6 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
   }
 
-  // 3. DOM Elements
   const getEl = (id) => document.getElementById(id);
 
   const elements = {
@@ -224,7 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
     dropzone: getEl('dropzone'),
     fileInput: getEl('file-input'),
 
-    // Batch Staging Queue Elements
+    // Sender Staging Queue
     dropzoneDefault: getEl('dropzone-default'),
     stagingContainer: getEl('staging-container'),
     stagingQueueList: getEl('staging-queue-list'),
@@ -233,19 +222,16 @@ document.addEventListener('DOMContentLoaded', () => {
     btnClearAllStaging: getEl('btn-clear-all-staging'),
     btnConfirmSendAll: getEl('btn-confirm-send-all'),
 
-    // Incoming Modal Elements
-    incomingModal: getEl('incoming-modal'),
-    incomingPeerName: getEl('incoming-peer-name'),
-    incomingFileName: getEl('incoming-file-name'),
-    incomingFileSize: getEl('incoming-file-size'),
-    chkAutoAccept: getEl('chk-auto-accept'),
-    btnAcceptTransfer: getEl('btn-accept-transfer'),
-    btnRejectTransfer: getEl('btn-reject-transfer'),
+    // Receiver Incoming Queue UI
+    receiverQueueContainer: getEl('receiver-queue-container'),
+    receiverPeerInfo: getEl('receiver-peer-info'),
+    receiverFileList: getEl('receiver-file-list'),
+    btnAcceptAllIncoming: getEl('btn-accept-all-incoming'),
+    btnDeclineAllIncoming: getEl('btn-decline-all-incoming'),
 
-    // Transfer Direction Indicators
+    // Progress Bar Elements
     transferSenderLabel: getEl('transfer-sender-label'),
     transferReceiverLabel: getEl('transfer-receiver-label'),
-
     progressContainer: getEl('progress-container'),
     transferFilename: getEl('transfer-filename'),
     transferPercentage: getEl('transfer-percentage'),
@@ -256,11 +242,9 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCancelTransfer: getEl('btn-cancel-transfer')
   };
 
-  // STEP 1: Batch Staging Queue Logic
+  // Sender Batch Staging Queue Functions
   function addFilesToStaging(fileList) {
     const newFiles = Array.from(fileList);
-    
-    // Prevent duplicate entries by comparing name + size + lastModified
     newFiles.forEach((file) => {
       const exists = state.stagedFiles.some(
         (f) => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified
@@ -269,7 +253,6 @@ document.addEventListener('DOMContentLoaded', () => {
         state.stagedFiles.push(file);
       }
     });
-
     renderStagingQueue();
   }
 
@@ -345,7 +328,6 @@ document.addEventListener('DOMContentLoaded', () => {
       elements.stagingQueueList.appendChild(card);
     });
 
-    // Attach item action handlers
     elements.stagingQueueList.querySelectorAll('[data-send-idx]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -363,7 +345,85 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 4. Room Management
+  // RECEIVER BATCH QUEUE RENDERING
+  function renderReceiverBatchQueue() {
+    if (!elements.receiverQueueContainer || !elements.receiverFileList) return;
+
+    if (state.incomingBatch.length === 0) {
+      elements.receiverQueueContainer.classList.add('hidden');
+      return;
+    }
+
+    elements.receiverQueueContainer.classList.remove('hidden');
+    elements.receiverFileList.innerHTML = '';
+
+    const firstItem = state.incomingBatch[0];
+    if (elements.receiverPeerInfo) {
+      elements.receiverPeerInfo.textContent = `${firstItem.senderName || 'Peer'} is offering ${state.incomingBatch.length} file(s)`;
+    }
+
+    state.incomingBatch.forEach((item) => {
+      const card = document.createElement('div');
+      card.className = 'flex items-center justify-between p-3 rounded-xl bg-slate-800/80 border border-slate-700/80 gap-3';
+
+      let actionHtml = '';
+      if (item.status === 'pending') {
+        actionHtml = `
+          <button data-accept-id="${item.fileId}" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow">
+            Accept
+          </button>
+          <button data-decline-id="${item.fileId}" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold rounded-lg">
+            Decline
+          </button>
+        `;
+      } else if (item.status === 'accepted') {
+        actionHtml = `<span class="text-xs font-bold text-emerald-400">Accepted</span>`;
+      } else if (item.status === 'declined') {
+        actionHtml = `<span class="text-xs font-bold text-rose-400">Declined</span>`;
+      }
+
+      card.innerHTML = `
+        <div class="flex flex-col min-w-0 flex-1">
+          <p class="text-xs font-bold text-slate-100 truncate">${item.name}</p>
+          <p class="text-[11px] font-mono text-slate-400">${formatBytes(item.size)}</p>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          ${actionHtml}
+        </div>
+      `;
+
+      elements.receiverFileList.appendChild(card);
+    });
+
+    elements.receiverFileList.querySelectorAll('[data-accept-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const fileId = btn.getAttribute('data-accept-id');
+        respondToIncomingFile(fileId, true);
+      });
+    });
+
+    elements.receiverFileList.querySelectorAll('[data-decline-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const fileId = btn.getAttribute('data-decline-id');
+        respondToIncomingFile(fileId, false);
+      });
+    });
+  }
+
+  function respondToIncomingFile(fileId, isAccepted) {
+    const item = state.incomingBatch.find((i) => i.fileId === fileId);
+    if (item) {
+      item.status = isAccepted ? 'accepted' : 'declined';
+      renderReceiverBatchQueue();
+    }
+
+    if (state.pendingFileResolvers[fileId]) {
+      state.pendingFileResolvers[fileId](isAccepted);
+      delete state.pendingFileResolvers[fileId];
+    }
+  }
+
+  // Room Management
   function createNewRoom() {
     const newRoomId = generateRoomId();
     window.location.hash = `room=${newRoomId}`;
@@ -426,12 +486,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   window.addEventListener('hashchange', () => {
     const roomId = getRoomIdFromHash();
-    if (roomId) {
-      joinRoom(roomId);
-    }
+    if (roomId) joinRoom(roomId);
   });
 
-  // 5. WebRTC Connection Setup
+  // WebRTC Setup
   function createPeerConnection(targetPeerId) {
     if (state.peerConnection) {
       state.peerConnection.close();
@@ -518,7 +576,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 6. Batch Transfer Engine
+  // BATCH & SENDER FILE ENGINE
   async function sendBatchFiles(filesToSend, indicesToRemove = []) {
     if (!state.dataChannel || state.dataChannel.readyState !== 'open') {
       showToast('Peer connection is not open!', 'error');
@@ -526,22 +584,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (state.isTransferring) {
-      showToast('A transfer is already in progress', 'error');
+      showToast('A transfer is currently in progress', 'error');
       return;
     }
 
+    const successfulIndices = [];
+
     for (let i = 0; i < filesToSend.length; i++) {
       const file = filesToSend[i];
-      const success = await sendFile(file, i + 1, filesToSend.length);
+      const indexInStaging = indicesToRemove[i];
       
-      if (!success || state.transferCancelled) {
-        break; // Stop remaining queue on cancel or decline
+      const fileResult = await sendFile(file, i + 1, filesToSend.length);
+
+      if (fileResult === 'cancelled') {
+        break; // Cancel button stopped batch
       }
+
+      if (fileResult === 'accepted') {
+        successfulIndices.push(indexInStaging);
+      }
+      // If 'declined', loop smoothly continues to next file!
     }
 
-    // Clean up successfully sent files from staging queue
-    if (indicesToRemove.length > 0) {
-      state.stagedFiles = state.stagedFiles.filter((_, idx) => !indicesToRemove.includes(idx));
+    // Clear sent files from staging
+    if (successfulIndices.length > 0) {
+      state.stagedFiles = state.stagedFiles.filter((_, idx) => !successfulIndices.includes(idx));
       renderStagingQueue();
     }
   }
@@ -553,7 +620,8 @@ document.addEventListener('DOMContentLoaded', () => {
     state.lastMetricTime = Date.now();
     state.lastMetricBytes = 0;
 
-    // UI Direction Setup
+    const fileId = 'file_' + Math.random().toString(36).substring(2, 9);
+
     if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'You (Sending)';
     if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
 
@@ -561,10 +629,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const fileLabel = queueTotal > 1 ? `[${queueIndex}/${queueTotal}] ${file.name}` : file.name;
     if (elements.transferFilename) elements.transferFilename.textContent = fileLabel;
-    if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver confirmation...';
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for peer response...';
 
     const metadata = {
       type: 'metadata',
+      fileId,
       name: file.name,
       size: file.size,
       mimeType: file.type,
@@ -574,25 +643,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
     playAudioFeedback('start');
 
-    // Wait for receiver confirmation response
-    const accepted = await new Promise((resolve) => {
+    // Wait for receiver decision on this file
+    const response = await new Promise((resolve) => {
       state.receiverReadyResolver = resolve;
       setTimeout(() => {
         if (state.receiverReadyResolver) {
           state.receiverReadyResolver = null;
-          resolve(false);
+          resolve('declined');
         }
-      }, 30000);
+      }, 45000);
     });
 
-    if (!accepted || state.transferCancelled) {
+    if (response === 'declined' || state.transferCancelled) {
       state.isTransferring = false;
-      const declineMsg = state.transferCancelled ? 'Transfer cancelled' : 'Transfer declined by peer';
+      const declineMsg = state.transferCancelled ? 'Transfer cancelled' : `Declined by peer: ${file.name}`;
+      
       resetTransferUI(declineMsg);
       showToast(declineMsg, 'error');
       playAudioFeedback('cancel');
       triggerHaptic([150, 50, 150]);
-      return false;
+      return state.transferCancelled ? 'cancelled' : 'declined';
     }
 
     if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
@@ -609,10 +679,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (state.dataChannel) {
               state.dataChannel.onbufferedamountlow = null;
             }
-            resetTransferUI('Transfer was cancelled');
+            resetTransferUI('Transfer cancelled');
             playAudioFeedback('cancel');
             triggerHaptic([150, 50, 150]);
-            resolve(false);
+            resolve('cancelled');
             return;
           }
 
@@ -637,36 +707,16 @@ document.addEventListener('DOMContentLoaded', () => {
           playAudioFeedback('complete');
           triggerHaptic([100, 50, 100, 50, 200]);
           state.isTransferring = false;
-          setTimeout(() => resetTransferUI(), 2500);
+          setTimeout(() => resetTransferUI(), 2000);
         }
-        resolve(true);
+        resolve('accepted');
       };
 
       sendChunks();
     });
   }
 
-  // STEP 2: Receiver Confirmation Modal Logic
-  function promptIncomingTransfer(metadata) {
-    if (state.autoAccept) {
-      return Promise.resolve(true);
-    }
-
-    if (elements.incomingPeerName) elements.incomingPeerName.textContent = `${metadata.senderName || 'Peer'} wants to send a file`;
-    if (elements.incomingFileName) elements.incomingFileName.textContent = metadata.name;
-    if (elements.incomingFileSize) elements.incomingFileSize.textContent = formatBytes(metadata.size);
-
-    if (elements.incomingModal) elements.incomingModal.classList.remove('hidden');
-
-    playAudioFeedback('start');
-    triggerHaptic([200, 100, 200]);
-
-    return new Promise((resolve) => {
-      state.receiverResponseResolver = resolve;
-    });
-  }
-
-  // 7. File Receiver & Data Dispatcher
+  // RECEIVER INCOMING DATA DISPATCHER
   async function handleIncomingData(event) {
     const data = event.data;
 
@@ -674,10 +724,9 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const parsed = JSON.parse(data);
 
-        // Receiver response handling
         if (parsed.type === 'receiver-accept') {
           if (state.receiverReadyResolver) {
-            state.receiverReadyResolver(true);
+            state.receiverReadyResolver('accepted');
             state.receiverReadyResolver = null;
           }
           return;
@@ -685,27 +734,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (parsed.type === 'receiver-reject') {
           if (state.receiverReadyResolver) {
-            state.receiverReadyResolver(false);
+            state.receiverReadyResolver('declined');
             state.receiverReadyResolver = null;
           }
           return;
         }
 
-        // Metadata Handshake
         if (parsed.type === 'metadata') {
-          state.incomingFileInfo = parsed;
+          const item = {
+            fileId: parsed.fileId,
+            name: parsed.name,
+            size: parsed.size,
+            mimeType: parsed.mimeType,
+            senderName: parsed.senderName,
+            status: 'pending'
+          };
 
-          const userAccepted = await promptIncomingTransfer(parsed);
+          state.incomingBatch.push(item);
+          renderReceiverBatchQueue();
+
+          playAudioFeedback('start');
+          triggerHaptic([200, 100, 200]);
+
+          const userAccepted = await new Promise((resolve) => {
+            state.pendingFileResolvers[parsed.fileId] = resolve;
+          });
 
           if (!userAccepted) {
             if (state.dataChannel && state.dataChannel.readyState === 'open') {
-              state.dataChannel.send(JSON.stringify({ type: 'receiver-reject' }));
+              state.dataChannel.send(JSON.stringify({ type: 'receiver-reject', fileId: parsed.fileId }));
             }
-            state.incomingFileInfo = null;
             return;
           }
 
-          // User accepted transfer
+          state.incomingFileInfo = parsed;
           state.isTransferring = true;
           state.receivedChunks = [];
           state.receivedSize = 0;
@@ -716,7 +778,6 @@ document.addEventListener('DOMContentLoaded', () => {
           state.fileHandle = null;
           state.writableStream = null;
 
-          // UI Direction Setup
           if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = `${parsed.senderName || 'Peer'} (Sending)`;
           if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'You (Receiving)';
 
@@ -726,9 +787,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if ('showSaveFilePicker' in window) {
             try {
-              state.fileHandle = await window.showSaveFilePicker({
-                suggestedName: parsed.name
-              });
+              state.fileHandle = await window.showSaveFilePicker({ suggestedName: parsed.name });
               state.writableStream = await state.fileHandle.createWritable();
               if (elements.transferStatus) elements.transferStatus.textContent = 'Streaming to disk...';
             } catch (err) {
@@ -739,7 +798,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           if (state.dataChannel && state.dataChannel.readyState === 'open') {
-            state.dataChannel.send(JSON.stringify({ type: 'receiver-accept' }));
+            state.dataChannel.send(JSON.stringify({ type: 'receiver-accept', fileId: parsed.fileId }));
           }
 
           updateTransferMetrics(0, parsed.size);
@@ -762,14 +821,14 @@ document.addEventListener('DOMContentLoaded', () => {
           state.receivedChunks = [];
           state.fileHandle = null;
 
-          resetTransferUI('Transfer was cancelled');
+          resetTransferUI('Transfer cancelled');
           showToast('Transfer was cancelled', 'error');
           playAudioFeedback('cancel');
           triggerHaptic([150, 50, 150]);
           return;
         }
       } catch (err) {
-        console.error('DataChannel JSON Error:', err);
+        console.error('DataChannel Error:', err);
       }
       return;
     }
@@ -817,12 +876,11 @@ document.addEventListener('DOMContentLoaded', () => {
         state.fileHandle = null;
         state.isTransferring = false;
 
-        setTimeout(() => resetTransferUI(), 2500);
+        setTimeout(() => resetTransferUI(), 2000);
       }
     }
   }
 
-  // 8. Speed & ETA Metrics Calculation
   function updateTransferMetrics(currentBytes, totalBytes) {
     if (!totalBytes || totalBytes === 0) return;
 
@@ -872,7 +930,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2500);
   }
 
-  // Event Listeners: Cancel Button
+  // Cancel Button
   if (elements.btnCancelTransfer) {
     elements.btnCancelTransfer.addEventListener('click', () => {
       state.transferCancelled = true;
@@ -883,7 +941,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
           state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
         } catch (e) {
-          console.warn('Failed to send cancel signal:', e);
+          console.warn('Cancel signal send error:', e);
         }
       }
 
@@ -895,14 +953,14 @@ document.addEventListener('DOMContentLoaded', () => {
       state.receivedChunks = [];
       state.fileHandle = null;
 
-      resetTransferUI('Transfer was cancelled');
+      resetTransferUI('Transfer cancelled');
       showToast('Transfer was cancelled', 'error');
       playAudioFeedback('cancel');
       triggerHaptic([150, 50, 150]);
     });
   }
 
-  // Event Listeners: Staging Queue Controls
+  // Sender Staging Listeners
   if (elements.btnAddMore && elements.fileInput) {
     elements.btnAddMore.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -927,42 +985,35 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Event Listeners: Modal Controls
-  if (elements.btnAcceptTransfer) {
-    elements.btnAcceptTransfer.addEventListener('click', () => {
-      if (elements.chkAutoAccept && elements.chkAutoAccept.checked) {
-        state.autoAccept = true;
-      }
-      if (elements.incomingModal) elements.incomingModal.classList.add('hidden');
-      if (state.receiverResponseResolver) {
-        state.receiverResponseResolver(true);
-        state.receiverResponseResolver = null;
-      }
+  // Receiver Queue Header Action Listeners
+  if (elements.btnAcceptAllIncoming) {
+    elements.btnAcceptAllIncoming.addEventListener('click', () => {
+      state.incomingBatch.forEach((item) => {
+        if (item.status === 'pending') {
+          respondToIncomingFile(item.fileId, true);
+        }
+      });
     });
   }
 
-  if (elements.btnRejectTransfer) {
-    elements.btnRejectTransfer.addEventListener('click', () => {
-      if (elements.incomingModal) elements.incomingModal.classList.add('hidden');
-      if (state.receiverResponseResolver) {
-        state.receiverResponseResolver(false);
-        state.receiverResponseResolver = null;
-      }
+  if (elements.btnDeclineAllIncoming) {
+    elements.btnDeclineAllIncoming.addEventListener('click', () => {
+      state.incomingBatch.forEach((item) => {
+        if (item.status === 'pending') {
+          respondToIncomingFile(item.fileId, false);
+        }
+      });
     });
   }
 
-  // 9. Socket & UI Handlers
+  // Socket setup
   function initSocket() {
-    if (typeof io === 'undefined') {
-      console.warn('Socket.io client SDK not found.');
-      return;
-    }
+    if (typeof io === 'undefined') return;
 
     state.socket = io(window.location.origin);
 
     state.socket.on('connect', () => {
       updateBadge('Waiting for peer', 'bg-sky-400');
-      
       state.socket.emit('create-or-join-room', {
         roomId: state.roomId,
         userInfo: localUser
@@ -984,11 +1035,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     state.socket.on('signal', handleSignalMessage);
 
-    state.socket.on('room-full', ({ roomId }) => {
-      updateBadge('Room full', 'bg-rose-500');
-      alert('This transfer room already has 2 connected peers.');
-    });
-
     state.socket.on('peer-disconnected', ({ peerId }) => {
       state.peers = state.peers.filter((p) => p.socketId !== peerId);
       if (state.peerConnection) {
@@ -996,7 +1042,6 @@ document.addEventListener('DOMContentLoaded', () => {
         state.peerConnection = null;
       }
       if (elements.transferSection) elements.transferSection.classList.add('hidden');
-      
       updateBadge('Waiting for peer', 'bg-sky-400');
       renderPeers();
     });
@@ -1025,11 +1070,7 @@ document.addEventListener('DOMContentLoaded', () => {
         card.className = 'flex flex-row items-center p-4 rounded-xl bg-white/5 border border-white/10 backdrop-blur-md gap-4 shadow-xl';
         card.innerHTML = `
           <div class="relative shrink-0">
-            <img 
-              src="${avatar}" 
-              alt="${name}" 
-              class="h-16 w-16 rounded-full bg-white/10 p-1 border-2 ${isSelf ? 'border-indigo-400' : 'border-emerald-400'}"
-            />
+            <img src="${avatar}" alt="${name}" class="h-16 w-16 rounded-full bg-white/10 p-1 border-2 ${isSelf ? 'border-indigo-400' : 'border-emerald-400'}"/>
             <span class="absolute bottom-0 right-0 h-4 w-4 rounded-full bg-emerald-400 border-2 border-slate-900"></span>
           </div>
           <div class="flex flex-col justify-center min-w-0">
@@ -1044,7 +1085,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Dropzone & File Selection Listeners
+  // Dropzone setup
   if (elements.dropzone && elements.fileInput) {
     elements.dropzone.addEventListener('click', (e) => {
       if (e.target.closest('#staging-container')) return;
@@ -1052,9 +1093,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     elements.fileInput.addEventListener('change', (e) => {
-      if (e.target.files.length > 0) {
-        addFilesToStaging(e.target.files);
-      }
+      if (e.target.files.length > 0) addFilesToStaging(e.target.files);
     });
 
     elements.dropzone.addEventListener('dragover', (e) => {
@@ -1069,13 +1108,10 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.dropzone.addEventListener('drop', (e) => {
       e.preventDefault();
       elements.dropzone.classList.remove('border-indigo-500', 'bg-indigo-500/10');
-      if (e.dataTransfer.files.length > 0) {
-        addFilesToStaging(e.dataTransfer.files);
-      }
+      if (e.dataTransfer.files.length > 0) addFilesToStaging(e.dataTransfer.files);
     });
   }
 
-  // Copy Share Link Listener
   if (elements.btnCopyLink && elements.shareUrlInput) {
     elements.btnCopyLink.addEventListener('click', async () => {
       try {
@@ -1088,49 +1124,32 @@ document.addEventListener('DOMContentLoaded', () => {
           elements.btnCopyLink.classList.replace('bg-emerald-600', 'bg-indigo-600');
         }, 2000);
       } catch (err) {
-        console.error('Failed to copy share link:', err);
+        console.error('Copy link error:', err);
       }
     });
   }
 
-  // New Room Listener
-  if (elements.btnNewRoom) {
-    elements.btnNewRoom.addEventListener('click', createNewRoom);
-  }
+  if (elements.btnNewRoom) elements.btnNewRoom.addEventListener('click', createNewRoom);
 
-  // Join Room by Code Listener
   function handleJoinByCode() {
     if (!elements.joinRoomCodeInput) return;
     const inputCode = elements.joinRoomCodeInput.value.trim();
-
-    if (!inputCode) {
-      showToast('Please enter a room code', 'error');
-      return;
-    }
-
-    if (inputCode === state.roomId) {
-      showToast('You are already in this room', 'info');
-      return;
-    }
+    if (!inputCode) return showToast('Please enter a room code', 'error');
+    if (inputCode === state.roomId) return showToast('You are already in this room', 'info');
 
     window.location.hash = `room=${inputCode}`;
     elements.joinRoomCodeInput.value = '';
     showToast(`Joining room: ${inputCode}`, 'info');
   }
 
-  if (elements.btnJoinRoom) {
-    elements.btnJoinRoom.addEventListener('click', handleJoinByCode);
-  }
+  if (elements.btnJoinRoom) elements.btnJoinRoom.addEventListener('click', handleJoinByCode);
 
   if (elements.joinRoomCodeInput) {
     elements.joinRoomCodeInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        handleJoinByCode();
-      }
+      if (e.key === 'Enter') handleJoinByCode();
     });
   }
 
-  // Initialize
   initRoom();
   initSocket();
 });
