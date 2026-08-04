@@ -47,9 +47,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Sender Batch Staging
     stagedFiles: [],
 
-    // Receiver Batch Staging Queue
-    incomingBatch: [], // List of { fileId, name, size, mimeType, senderName, status: 'pending'|'accepted'|'declined' }
-    pendingFileResolvers: {}, // Maps fileId -> resolve(boolean)
+    // Receiver Batch State
+    incomingBatch: [], // List of { fileId, name, size, mimeType, accepted: true|false }
+    batchResponseResolver: null,
 
     // Active File Stream state
     incomingFileInfo: null,
@@ -67,7 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
     transferCancelled: false,
 
     // Handshake Resolvers
-    receiverReadyResolver: null
+    batchDecisionResolver: null
   };
 
   const ICE_SERVERS = {
@@ -242,7 +242,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCancelTransfer: getEl('btn-cancel-transfer')
   };
 
-  // Sender Batch Staging Queue Functions
+  // Sender Staging Functions
   function addFilesToStaging(fileList) {
     const newFiles = Array.from(fileList);
     newFiles.forEach((file) => {
@@ -357,73 +357,64 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.receiverQueueContainer.classList.remove('hidden');
     elements.receiverFileList.innerHTML = '';
 
-    const firstItem = state.incomingBatch[0];
     if (elements.receiverPeerInfo) {
-      elements.receiverPeerInfo.textContent = `${firstItem.senderName || 'Peer'} is offering ${state.incomingBatch.length} file(s)`;
+      const senderName = state.incomingBatch[0]?.senderName || 'Peer';
+      elements.receiverPeerInfo.textContent = `${senderName} wants to send ${state.incomingBatch.length} file(s)`;
     }
 
     state.incomingBatch.forEach((item) => {
       const card = document.createElement('div');
       card.className = 'flex items-center justify-between p-3 rounded-xl bg-slate-800/80 border border-slate-700/80 gap-3';
 
-      let actionHtml = '';
-      if (item.status === 'pending') {
-        actionHtml = `
-          <button data-accept-id="${item.fileId}" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow">
-            Accept
-          </button>
-          <button data-decline-id="${item.fileId}" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold rounded-lg">
-            Decline
-          </button>
-        `;
-      } else if (item.status === 'accepted') {
-        actionHtml = `<span class="text-xs font-bold text-emerald-400">Accepted</span>`;
-      } else if (item.status === 'declined') {
-        actionHtml = `<span class="text-xs font-bold text-rose-400">Declined</span>`;
-      }
-
       card.innerHTML = `
-        <div class="flex flex-col min-w-0 flex-1">
-          <p class="text-xs font-bold text-slate-100 truncate">${item.name}</p>
-          <p class="text-[11px] font-mono text-slate-400">${formatBytes(item.size)}</p>
+        <div class="flex items-center gap-3 min-w-0 flex-1">
+          <input type="checkbox" data-file-id="${item.fileId}" ${item.accepted ? 'checked' : ''} class="h-4 w-4 rounded border-slate-600 bg-slate-900 text-indigo-600 focus:ring-indigo-500 cursor-pointer"/>
+          <div class="flex flex-col min-w-0">
+            <p class="text-xs font-bold text-slate-100 truncate">${item.name}</p>
+            <p class="text-[11px] font-mono text-slate-400">${formatBytes(item.size)}</p>
+          </div>
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          ${actionHtml}
+          <span class="text-xs font-semibold ${item.accepted ? 'text-emerald-400' : 'text-slate-500'}">
+            ${item.accepted ? 'Will Accept' : 'Declined'}
+          </span>
         </div>
       `;
 
       elements.receiverFileList.appendChild(card);
     });
 
-    elements.receiverFileList.querySelectorAll('[data-accept-id]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const fileId = btn.getAttribute('data-accept-id');
-        respondToIncomingFile(fileId, true);
-      });
-    });
-
-    elements.receiverFileList.querySelectorAll('[data-decline-id]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const fileId = btn.getAttribute('data-decline-id');
-        respondToIncomingFile(fileId, false);
+    elements.receiverFileList.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.addEventListener('change', (e) => {
+        const fileId = e.target.getAttribute('data-file-id');
+        const item = state.incomingBatch.find((i) => i.fileId === fileId);
+        if (item) {
+          item.accepted = e.target.checked;
+          renderReceiverBatchQueue();
+        }
       });
     });
   }
 
-  function respondToIncomingFile(fileId, isAccepted) {
-    const item = state.incomingBatch.find((i) => i.fileId === fileId);
-    if (item) {
-      item.status = isAccepted ? 'accepted' : 'declined';
-      renderReceiverBatchQueue();
+  function submitReceiverBatchResponse(isAcceptingAny) {
+    const decisions = {};
+    state.incomingBatch.forEach((item) => {
+      decisions[item.fileId] = isAcceptingAny ? item.accepted : false;
+    });
+
+    if (state.dataChannel && state.dataChannel.readyState === 'open') {
+      state.dataChannel.send(
+        JSON.stringify({
+          type: 'batch-response',
+          decisions
+        })
+      );
     }
 
-    if (state.pendingFileResolvers[fileId]) {
-      state.pendingFileResolvers[fileId](isAccepted);
-      delete state.pendingFileResolvers[fileId];
-    }
+    elements.receiverQueueContainer.classList.add('hidden');
   }
 
-  // Room Management
+  // Room & WebRTC Setup
   function createNewRoom() {
     const newRoomId = generateRoomId();
     window.location.hash = `room=${newRoomId}`;
@@ -450,9 +441,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     state.dataChannel = null;
 
-    if (elements.transferSection) {
-      elements.transferSection.classList.add('hidden');
-    }
+    if (elements.transferSection) elements.transferSection.classList.add('hidden');
 
     state.roomId = newRoomId;
     state.peers = [];
@@ -489,7 +478,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (roomId) joinRoom(roomId);
   });
 
-  // WebRTC Setup
   function createPeerConnection(targetPeerId) {
     if (state.peerConnection) {
       state.peerConnection.close();
@@ -576,7 +564,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // BATCH & SENDER FILE ENGINE
+  // SENDER BATCH TRANSMISSION ENGINE
   async function sendBatchFiles(filesToSend, indicesToRemove = []) {
     if (!state.dataChannel || state.dataChannel.readyState !== 'open') {
       showToast('Peer connection is not open!', 'error');
@@ -588,84 +576,111 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const successfulIndices = [];
-
-    for (let i = 0; i < filesToSend.length; i++) {
-      const file = filesToSend[i];
-      const indexInStaging = indicesToRemove[i];
-      
-      const fileResult = await sendFile(file, i + 1, filesToSend.length);
-
-      if (fileResult === 'cancelled') {
-        break; // Cancel button stopped batch
-      }
-
-      if (fileResult === 'accepted') {
-        successfulIndices.push(indexInStaging);
-      }
-      // If 'declined', loop smoothly continues to next file!
-    }
-
-    // Clear sent files from staging
-    if (successfulIndices.length > 0) {
-      state.stagedFiles = state.stagedFiles.filter((_, idx) => !successfulIndices.includes(idx));
-      renderStagingQueue();
-    }
-  }
-
-  async function sendFile(file, queueIndex = 1, queueTotal = 1) {
     state.isTransferring = true;
     state.transferCancelled = false;
-    state.transferStartTime = Date.now();
-    state.lastMetricTime = Date.now();
-    state.lastMetricBytes = 0;
 
-    const fileId = 'file_' + Math.random().toString(36).substring(2, 9);
-
-    if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'You (Sending)';
-    if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
-
-    if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
-    
-    const fileLabel = queueTotal > 1 ? `[${queueIndex}/${queueTotal}] ${file.name}` : file.name;
-    if (elements.transferFilename) elements.transferFilename.textContent = fileLabel;
-    if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for peer response...';
-
-    const metadata = {
-      type: 'metadata',
-      fileId,
+    // Build batch payload
+    const batchPayload = filesToSend.map((file) => ({
+      fileId: 'file_' + Math.random().toString(36).substring(2, 9),
       name: file.name,
       size: file.size,
       mimeType: file.type,
       senderName: localUser.name
-    };
-    state.dataChannel.send(JSON.stringify(metadata));
+    }));
 
-    playAudioFeedback('start');
+    if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
+    if (elements.transferStatus) elements.transferStatus.textContent = 'Waiting for receiver to accept files...';
 
-    // Wait for receiver decision on this file
-    const response = await new Promise((resolve) => {
-      state.receiverReadyResolver = resolve;
+    // Send single batch metadata offer
+    state.dataChannel.send(
+      JSON.stringify({
+        type: 'batch-offer',
+        files: batchPayload
+      })
+    );
+
+    // Await batch response mapping
+    const batchDecisions = await new Promise((resolve) => {
+      state.batchDecisionResolver = resolve;
       setTimeout(() => {
-        if (state.receiverReadyResolver) {
-          state.receiverReadyResolver = null;
-          resolve('declined');
+        if (state.batchDecisionResolver) {
+          state.batchDecisionResolver = null;
+          resolve(null);
         }
-      }, 45000);
+      }, 60000);
     });
 
-    if (response === 'declined' || state.transferCancelled) {
+    if (!batchDecisions || state.transferCancelled) {
       state.isTransferring = false;
-      const declineMsg = state.transferCancelled ? 'Transfer cancelled' : `Declined by peer: ${file.name}`;
-      
-      resetTransferUI(declineMsg);
-      showToast(declineMsg, 'error');
+      resetTransferUI('Transfer declined or timed out');
+      showToast('Transfer declined or timed out', 'error');
       playAudioFeedback('cancel');
-      triggerHaptic([150, 50, 150]);
-      return state.transferCancelled ? 'cancelled' : 'declined';
+      return;
     }
 
+    const successfulIndices = [];
+
+    // Filter files receiver agreed to accept
+    const acceptedFilesToStream = filesToSend.filter((file, idx) => {
+      const meta = batchPayload[idx];
+      return batchDecisions[meta.fileId] === true;
+    });
+
+    if (acceptedFilesToStream.length === 0) {
+      state.isTransferring = false;
+      resetTransferUI('Peer declined all files');
+      showToast('Peer declined all files in batch', 'error');
+      playAudioFeedback('cancel');
+      return;
+    }
+
+    // Stream accepted files back-to-back
+    for (let i = 0; i < acceptedFilesToStream.length; i++) {
+      const file = acceptedFilesToStream[i];
+      const originalIdx = filesToSend.indexOf(file);
+      const meta = batchPayload[originalIdx];
+
+      const success = await streamSingleFile(file, meta, i + 1, acceptedFilesToStream.length);
+      if (!success) break;
+
+      successfulIndices.push(indicesToRemove[originalIdx]);
+    }
+
+    // Remove successfully sent files from sender staging
+    if (successfulIndices.length > 0) {
+      state.stagedFiles = state.stagedFiles.filter((_, idx) => !successfulIndices.includes(idx));
+      renderStagingQueue();
+    }
+
+    state.isTransferring = false;
+  }
+
+  async function streamSingleFile(file, metadata, fileIndex, totalFiles) {
+    if (state.transferCancelled) return false;
+
+    state.transferStartTime = Date.now();
+    state.lastMetricTime = Date.now();
+    state.lastMetricBytes = 0;
+
+    if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'You (Sending)';
+    if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'Peer (Receiving)';
+
+    const label = totalFiles > 1 ? `[${fileIndex}/${totalFiles}] ${file.name}` : file.name;
+    if (elements.transferFilename) elements.transferFilename.textContent = label;
     if (elements.transferStatus) elements.transferStatus.textContent = 'Sending...';
+
+    // Signal start of file stream
+    state.dataChannel.send(
+      JSON.stringify({
+        type: 'start-file-stream',
+        fileId: metadata.fileId,
+        name: metadata.name,
+        size: metadata.size,
+        mimeType: metadata.mimeType
+      })
+    );
+
+    playAudioFeedback('start');
 
     const arrayBuffer = await file.arrayBuffer();
     let offset = 0;
@@ -675,14 +690,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const sendChunks = () => {
         while (offset < file.size) {
           if (state.transferCancelled) {
-            state.isTransferring = false;
-            if (state.dataChannel) {
-              state.dataChannel.onbufferedamountlow = null;
-            }
+            if (state.dataChannel) state.dataChannel.onbufferedamountlow = null;
             resetTransferUI('Transfer cancelled');
             playAudioFeedback('cancel');
-            triggerHaptic([150, 50, 150]);
-            resolve('cancelled');
+            resolve(false);
             return;
           }
 
@@ -701,15 +712,12 @@ document.addEventListener('DOMContentLoaded', () => {
           updateTransferMetrics(offset, file.size);
         }
 
-        if (!state.transferCancelled) {
-          if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
-          showToast(`Sent ${file.name} successfully`, 'success');
-          playAudioFeedback('complete');
-          triggerHaptic([100, 50, 100, 50, 200]);
-          state.isTransferring = false;
-          setTimeout(() => resetTransferUI(), 2000);
-        }
-        resolve('accepted');
+        if (elements.transferStatus) elements.transferStatus.textContent = 'Completed!';
+        showToast(`Sent ${file.name}`, 'success');
+        playAudioFeedback('complete');
+        triggerHaptic([100, 50, 100]);
+        setTimeout(() => resetTransferUI(), 1500);
+        resolve(true);
       };
 
       sendChunks();
@@ -724,49 +732,30 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const parsed = JSON.parse(data);
 
-        if (parsed.type === 'receiver-accept') {
-          if (state.receiverReadyResolver) {
-            state.receiverReadyResolver('accepted');
-            state.receiverReadyResolver = null;
-          }
-          return;
-        }
+        // Batch offer received: Render full list immediately
+        if (parsed.type === 'batch-offer') {
+          state.incomingBatch = parsed.files.map((f) => ({
+            ...f,
+            accepted: true
+          }));
 
-        if (parsed.type === 'receiver-reject') {
-          if (state.receiverReadyResolver) {
-            state.receiverReadyResolver('declined');
-            state.receiverReadyResolver = null;
-          }
-          return;
-        }
-
-        if (parsed.type === 'metadata') {
-          const item = {
-            fileId: parsed.fileId,
-            name: parsed.name,
-            size: parsed.size,
-            mimeType: parsed.mimeType,
-            senderName: parsed.senderName,
-            status: 'pending'
-          };
-
-          state.incomingBatch.push(item);
           renderReceiverBatchQueue();
-
           playAudioFeedback('start');
           triggerHaptic([200, 100, 200]);
+          return;
+        }
 
-          const userAccepted = await new Promise((resolve) => {
-            state.pendingFileResolvers[parsed.fileId] = resolve;
-          });
-
-          if (!userAccepted) {
-            if (state.dataChannel && state.dataChannel.readyState === 'open') {
-              state.dataChannel.send(JSON.stringify({ type: 'receiver-reject', fileId: parsed.fileId }));
-            }
-            return;
+        // Sender receives decision array from receiver
+        if (parsed.type === 'batch-response') {
+          if (state.batchDecisionResolver) {
+            state.batchDecisionResolver(parsed.decisions);
+            state.batchDecisionResolver = null;
           }
+          return;
+        }
 
+        // File stream header
+        if (parsed.type === 'start-file-stream') {
           state.incomingFileInfo = parsed;
           state.isTransferring = true;
           state.receivedChunks = [];
@@ -775,30 +764,21 @@ document.addEventListener('DOMContentLoaded', () => {
           state.lastMetricTime = Date.now();
           state.lastMetricBytes = 0;
           state.transferCancelled = false;
-          state.fileHandle = null;
-          state.writableStream = null;
 
-          if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = `${parsed.senderName || 'Peer'} (Sending)`;
+          if (elements.transferSenderLabel) elements.transferSenderLabel.textContent = 'Peer (Sending)';
           if (elements.transferReceiverLabel) elements.transferReceiverLabel.textContent = 'You (Receiving)';
 
           if (elements.progressContainer) elements.progressContainer.classList.remove('hidden');
           if (elements.transferFilename) elements.transferFilename.textContent = parsed.name;
-          if (elements.transferStatus) elements.transferStatus.textContent = 'Preparing save location...';
+          if (elements.transferStatus) elements.transferStatus.textContent = 'Receiving stream...';
 
-          if ('showSaveFilePicker' in window) {
+          if ('showSaveFilePicker' in window && !state.writableStream) {
             try {
               state.fileHandle = await window.showSaveFilePicker({ suggestedName: parsed.name });
               state.writableStream = await state.fileHandle.createWritable();
-              if (elements.transferStatus) elements.transferStatus.textContent = 'Streaming to disk...';
-            } catch (err) {
-              if (elements.transferStatus) elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
+            } catch (e) {
+              // Fallback to memory
             }
-          } else {
-            if (elements.transferStatus) elements.transferStatus.textContent = 'Receiving (Memory Fallback)...';
-          }
-
-          if (state.dataChannel && state.dataChannel.readyState === 'open') {
-            state.dataChannel.send(JSON.stringify({ type: 'receiver-accept', fileId: parsed.fileId }));
           }
 
           updateTransferMetrics(0, parsed.size);
@@ -810,29 +790,24 @@ document.addEventListener('DOMContentLoaded', () => {
           state.isTransferring = false;
           state.incomingFileInfo = null;
 
-          if (state.dataChannel) {
-            state.dataChannel.onbufferedamountlow = null;
-          }
           if (state.writableStream) {
             await state.writableStream.abort().catch(() => {});
             state.writableStream = null;
           }
 
           state.receivedChunks = [];
-          state.fileHandle = null;
-
           resetTransferUI('Transfer cancelled');
           showToast('Transfer was cancelled', 'error');
           playAudioFeedback('cancel');
-          triggerHaptic([150, 50, 150]);
           return;
         }
       } catch (err) {
-        console.error('DataChannel Error:', err);
+        console.error('Data error:', err);
       }
       return;
     }
 
+    // Binary file chunk streaming
     if ((data instanceof ArrayBuffer || ArrayBuffer.isView(data)) && state.incomingFileInfo) {
       if (state.transferCancelled) return;
 
@@ -850,11 +825,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (state.receivedSize >= state.incomingFileInfo.size) {
         if (state.writableStream) {
           await state.writableStream.close();
-          if (elements.transferStatus) elements.transferStatus.textContent = 'Saved to disk!';
+          state.writableStream = null;
           showToast(`Saved to disk: ${state.incomingFileInfo.name}`, 'success');
         } else {
-          const blob = new Blob(state.receivedChunks, { 
-            type: state.incomingFileInfo.mimeType || 'application/octet-stream' 
+          const blob = new Blob(state.receivedChunks, {
+            type: state.incomingFileInfo.mimeType || 'application/octet-stream'
           });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -862,21 +837,17 @@ document.addEventListener('DOMContentLoaded', () => {
           a.download = state.incomingFileInfo.name;
           a.click();
           URL.revokeObjectURL(url);
-
-          if (elements.transferStatus) elements.transferStatus.textContent = 'Downloaded!';
           showToast(`Downloaded ${state.incomingFileInfo.name}`, 'success');
         }
 
         playAudioFeedback('complete');
-        triggerHaptic([100, 50, 100, 50, 200]);
+        triggerHaptic([100, 50, 100]);
 
         state.incomingFileInfo = null;
         state.receivedChunks = [];
-        state.writableStream = null;
-        state.fileHandle = null;
         state.isTransferring = false;
 
-        setTimeout(() => resetTransferUI(), 2000);
+        setTimeout(() => resetTransferUI(), 1500);
       }
     }
   }
@@ -930,19 +901,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2500);
   }
 
-  // Cancel Button
+  // Event Listeners
   if (elements.btnCancelTransfer) {
     elements.btnCancelTransfer.addEventListener('click', () => {
       state.transferCancelled = true;
       state.isTransferring = false;
-      state.incomingFileInfo = null;
 
       if (state.dataChannel && state.dataChannel.readyState === 'open') {
         try {
           state.dataChannel.send(JSON.stringify({ type: 'cancel' }));
-        } catch (e) {
-          console.warn('Cancel signal send error:', e);
-        }
+        } catch (e) {}
       }
 
       if (state.writableStream) {
@@ -951,16 +919,12 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       state.receivedChunks = [];
-      state.fileHandle = null;
-
       resetTransferUI('Transfer cancelled');
       showToast('Transfer was cancelled', 'error');
       playAudioFeedback('cancel');
-      triggerHaptic([150, 50, 150]);
     });
   }
 
-  // Sender Staging Listeners
   if (elements.btnAddMore && elements.fileInput) {
     elements.btnAddMore.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -985,24 +949,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Receiver Queue Header Action Listeners
   if (elements.btnAcceptAllIncoming) {
     elements.btnAcceptAllIncoming.addEventListener('click', () => {
-      state.incomingBatch.forEach((item) => {
-        if (item.status === 'pending') {
-          respondToIncomingFile(item.fileId, true);
-        }
-      });
+      submitReceiverBatchResponse(true);
     });
   }
 
   if (elements.btnDeclineAllIncoming) {
     elements.btnDeclineAllIncoming.addEventListener('click', () => {
-      state.incomingBatch.forEach((item) => {
-        if (item.status === 'pending') {
-          respondToIncomingFile(item.fileId, false);
-        }
-      });
+      submitReceiverBatchResponse(false);
     });
   }
 
